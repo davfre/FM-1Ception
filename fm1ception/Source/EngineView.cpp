@@ -1,4 +1,5 @@
 #include "EngineView.h"
+#include "FirmwarePrefs.h"
 #include "Theme.h"
 
 namespace fm1c
@@ -15,6 +16,10 @@ const R kMenu   { 458.0f, 0.0f, 22.0f, 16.0f };
 const R kToggle { 452.0f, 592.0f, 24.0f, 26.0f };
 const R kPopover { 4.0f, 498.0f, 472.0f, 90.0f };
 const R kKeys   { 248.0f, 564.0f, 196.0f, 54.0f };
+const R kMeter  { 41.0f, 567.0f, 8.0f, 24.0f };
+
+/** Half the soft knobs' band, in screen rows. */
+constexpr int kSoftBand = 22;
 
 struct KnobSpec
 {
@@ -163,6 +168,29 @@ void EngineView::setShiftHeld (bool held)
     repaintDesign (kRows);
 }
 
+void EngineView::setSelected (bool isSelected)
+{
+    if (isSelected == selectedMark)
+        return;
+    selectedMark = isSelected;
+    repaintDesign (kStrip);
+}
+
+void EngineView::setSoftKnobRow (int row)
+{
+    prefs::setSoftKnobRow (firmware, row);
+    softRow = firmware.isEmpty() ? -1 : juce::jlimit (-1, FM1E_LCD_H - 1, row);
+    prefsRevision = prefs::revision().load();
+    repaintDesign (kScreen);
+}
+
+int EngineView::lcdRowAt (juce::Point<float> d) const
+{
+    if (! kScreen.contains (d))
+        return -1;
+    return juce::jlimit (0, FM1E_LCD_H - 1, (int) ((d.y - kScreen.getY()) * (float) FM1E_LCD_H / kScreen.getHeight()));
+}
+
 //==============================================================================
 juce::AffineTransform EngineView::designToLocal() const
 {
@@ -181,7 +209,7 @@ void EngineView::repaintDesign (R r)
     repaint (r.transformedBy (designToLocal()).getSmallestIntegerContainer().expanded (1));
 }
 
-EngineView::Hit EngineView::hitTest (juce::Point<float> d) const
+EngineView::Hit EngineView::hitAt (juce::Point<float> d) const
 {
     if (popoverShown())
     {
@@ -200,7 +228,11 @@ EngineView::Hit EngineView::hitTest (juce::Point<float> d) const
     if (isBlank() && kLoad.contains (d))
         return { Hit::loadButton };
     if (kScreen.contains (d))
-        return { Hit::strip };
+    {
+        if (! isBlank() && softRow >= 0 && std::abs (lcdRowAt (d) - softRow) <= kSoftBand)
+            return { Hit::softKnob, juce::jlimit (0, 3, (int) (d.x * 4.0f / kScreen.getWidth())) };
+        return { Hit::screen };
+    }
 
     for (int i = 0; i < 8; ++i)
         if (d.getDistanceFrom ({ kKnobs[i].cx, kKnobs[i].cy }) <= kKnobs[i].r + 5.0f)
@@ -257,6 +289,9 @@ void EngineView::refresh()
             rows = true;
         }
 
+    if (meter.push (proc.takeEnginePeaks (index)))
+        repaintDesign (kMeter);
+
     if (handle != nullptr)
     {
         std::array<float, FM1E_LEDS> fractions {};
@@ -280,7 +315,8 @@ void EngineView::refresh()
         hasFirmware = fw;
         status = st;
 
-        if (lcdRaw != lcdPrev)
+        // (a hidden tab's screen is converted when it is shown again)
+        if (isVisible() && lcdRaw != lcdPrev)
         {
             const juce::Image::BitmapData px (lcd, juce::Image::BitmapData::writeOnly);
             for (int y = 0; y < FM1E_LCD_H; ++y)
@@ -306,10 +342,19 @@ void EngineView::refresh()
     if (handle == nullptr)
     {
         left = "OFF";
+        firmware.clear();
+        softRow = -1;
     }
     else
     {
-        const auto name = handle->firmwareName();
+        const auto name = hasFirmware ? handle->firmwareName() : juce::String();
+        if (name != firmware || prefs::revision().load() != prefsRevision)
+        {
+            firmware = name;
+            prefsRevision = prefs::revision().load();
+            softRow = prefs::softKnobRow (firmware);
+            repaintDesign (kScreen);
+        }
         left = name.isEmpty() ? juce::String ("EMPTY") : name.toUpperCase();
         const auto msg = handle->currentMessage();
         if (msg.isNotEmpty())
@@ -375,6 +420,12 @@ void EngineView::paintStrip (juce::Graphics& g)
     g.setColour (hover.y >= 0 && kMenu.contains (hover) ? theme::silk : theme::dimSilk);
     for (int i = 0; i < 3; ++i)
         g.fillRect (kMenu.getCentreX() - 5.0f, kMenu.getCentreY() - 4.0f + (float) i * 3.5f, 10.0f, 1.3f);
+
+    if (selectedMark)
+    {
+        g.setColour (theme::amber);
+        g.fillRect (kStrip.withTop (kStrip.getBottom() - 2.0f));
+    }
 }
 
 void EngineView::paintScreen (juce::Graphics& g)
@@ -393,6 +444,7 @@ void EngineView::paintScreen (juce::Graphics& g)
                                             : "Booting...",
                               kScreen.reduced (30.0f).toNearestInt(), juce::Justification::centred, 3);
         }
+        paintSoftKnobs (g);
     }
     else
     {
@@ -421,6 +473,31 @@ void EngineView::paintScreen (juce::Graphics& g)
     {
         g.setColour (theme::amber);
         g.drawRect (kScreen.reduced (1.0f), 3.0f);
+    }
+}
+
+void EngineView::paintSoftKnobs (juce::Graphics& g)
+{
+    if (softRow < 0)
+        return;
+    const auto h = hitAt (hover);
+    const bool turning = grab && grab->hit.kind == Hit::softKnob;
+    const int active = turning ? grab->hit.id : h.kind == Hit::softKnob ? h.id : -1;
+    if (active < 0)
+        return;
+
+    // the band, split in four, while the pointer is in it
+    const float rowH = kScreen.getHeight() / (float) FM1E_LCD_H;
+    const float y0 = kScreen.getY() + (float) juce::jmax (0, softRow - kSoftBand) * rowH;
+    const float y1 = kScreen.getY() + (float) juce::jmin ((int) FM1E_LCD_H, softRow + kSoftBand + 1) * rowH;
+    const float w = kScreen.getWidth() / 4.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        const R r (kScreen.getX() + (float) i * w, y0, w, y1 - y0);
+        g.setColour (theme::amber.withAlpha (i == active ? 0.16f : 0.05f));
+        g.fillRect (r.reduced (2.0f));
+        g.setColour (theme::amber.withAlpha (i == active ? 0.8f : 0.3f));
+        g.drawRect (r.reduced (2.0f), 1.0f);
     }
 }
 
@@ -471,6 +548,10 @@ void EngineView::paintRows (juce::Graphics& g)
 
     for (const auto& b : kOct)
         paintButton (g, b.r, b.label, b.id, 7.5f);
+
+    g.setColour (juce::Colour (0xff1c1d20));
+    g.fillRoundedRectangle (kMeter.expanded (1.5f), 1.5f);
+    meter.paint (g, kMeter, true);
 
     paintKeyboard (g);
     paintToggle (g);
@@ -550,7 +631,10 @@ void EngineView::paintPopover (juce::Graphics& g)
 void EngineView::mouseDown (const juce::MouseEvent& e)
 {
     const auto d = toDesign (e.position);
-    const auto h = hitTest (d);
+    const auto h = hitAt (d);
+
+    if (onSelect != nullptr)
+        onSelect (index);
 
     if (e.mods.isPopupMenu())
     {
@@ -562,7 +646,7 @@ void EngineView::mouseDown (const juce::MouseEvent& e)
         }
         else if (onMenuRequest != nullptr)
         {
-            onMenuRequest (index);
+            onMenuRequest (index, isBlank() ? -1 : lcdRowAt (d));
         }
         return;
     }
@@ -574,7 +658,7 @@ void EngineView::mouseDown (const juce::MouseEvent& e)
     {
         case Hit::menu:
             if (onMenuRequest != nullptr)
-                onMenuRequest (index);
+                onMenuRequest (index, -1);
             return;
         case Hit::loadButton:
             if (onLoadRequest != nullptr)
@@ -602,7 +686,10 @@ void EngineView::mouseDown (const juce::MouseEvent& e)
             if (h.id == kMasterKnob)
                 proc.masterParam (index).beginChangeGesture();
             break;
-        case Hit::none: case Hit::strip: case Hit::popoverBack:
+        case Hit::softKnob:
+            repaintDesign (kScreen);
+            break;
+        case Hit::none: case Hit::strip: case Hit::screen: case Hit::popoverBack:
             break;
     }
     grab = g;
@@ -618,7 +705,7 @@ void EngineView::mouseDrag (const juce::MouseEvent& e)
     if (g.hit.kind == Hit::key && g.held >= 0)
     {
         // a drag across the keys is a glissando
-        const auto h = hitTest (toDesign (e.position));
+        const auto h = hitAt (toDesign (e.position));
         if (h.kind == Hit::key && h.id != g.held)
         {
             press (g.held, false);
@@ -626,21 +713,18 @@ void EngineView::mouseDrag (const juce::MouseEvent& e)
             press (g.held, true);
         }
     }
-    else if (g.hit.kind == Hit::knob)
+    else if (g.hit.kind == Hit::knob && g.hit.id == kMasterKnob)
     {
-        if (g.hit.id == kMasterKnob)
-        {
-            const auto& p = proc.masterParam (index);
-            setMaster (p.convertFrom0to1 (p.getValue()) + (g.lastY - y) * 0.005f);
-        }
-        else
-        {
-            // 8 px of drag a click
-            g.acc += g.lastY - y;
-            const int n = (int) (g.acc / 8.0f);
-            g.acc -= (float) n * 8.0f;
-            turn (g.hit.id, n);
-        }
+        const auto& p = proc.masterParam (index);
+        setMaster (p.convertFrom0to1 (p.getValue()) + (g.lastY - y) * 0.005f);
+    }
+    else if (g.hit.kind == Hit::knob || g.hit.kind == Hit::softKnob)
+    {
+        // 8 px of drag a click (a soft knob turns KNOB1..4, ids 0..3 either way)
+        g.acc += g.lastY - y;
+        const int n = (int) (g.acc / 8.0f);
+        g.acc -= (float) n * 8.0f;
+        turn (g.hit.id, n);
     }
     g.lastY = y;
 }
@@ -653,12 +737,15 @@ void EngineView::mouseUp (const juce::MouseEvent&)
         press (grab->held, false);
     if (grab->hit.kind == Hit::knob && grab->hit.id == kMasterKnob)
         proc.masterParam (index).endChangeGesture();
+    const bool soft = grab->hit.kind == Hit::softKnob;
     grab.reset();
+    if (soft)
+        repaintDesign (kScreen);
 }
 
 void EngineView::mouseDoubleClick (const juce::MouseEvent& e)
 {
-    const auto h = hitTest (toDesign (e.position));
+    const auto h = hitAt (toDesign (e.position));
     if (h.kind == Hit::knob && h.id == kMasterKnob)
     {
         auto& p = proc.masterParam (index);
@@ -670,11 +757,11 @@ void EngineView::mouseDoubleClick (const juce::MouseEvent& e)
 
 void EngineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
-    const auto h = hitTest (toDesign (e.position));
-    if (h.kind != Hit::knob)
+    const auto h = hitAt (toDesign (e.position));
+    if (h.kind != Hit::knob && h.kind != Hit::softKnob)
         return;
     const float delta = w.isReversed ? -w.deltaY : w.deltaY;
-    if (h.id == kMasterKnob)
+    if (h.kind == Hit::knob && h.id == kMasterKnob)
     {
         auto& p = proc.masterParam (index);
         p.beginChangeGesture();
@@ -693,27 +780,36 @@ void EngineView::mouseMove (const juce::MouseEvent& e)
 {
     const auto d = toDesign (e.position);
     const bool wasOverLoad = kLoad.contains (hover), wasOverMenu = kMenu.contains (hover);
+    const auto wasSoft = hitAt (hover);
     hover = d;
     if (kLoad.contains (d) != wasOverLoad)
         repaintDesign (kLoad);
     if (kMenu.contains (d) != wasOverMenu)
         repaintDesign (kMenu);
+    const auto soft = hitAt (d);
+    if ((soft.kind == Hit::softKnob) != (wasSoft.kind == Hit::softKnob) || (soft.kind == Hit::softKnob && soft.id != wasSoft.id))
+        repaintDesign (kScreen);
 }
 
 void EngineView::mouseExit (const juce::MouseEvent&)
 {
+    const bool wasSoft = hitAt (hover).kind == Hit::softKnob;
     hover = { -1.0f, -1.0f };
     repaintDesign (kLoad);
     repaintDesign (kMenu);
+    if (wasSoft)
+        repaintDesign (kScreen);
 }
 
 juce::String EngineView::getTooltip()
 {
-    const auto h = hitTest (hover);
+    const auto h = hitAt (hover);
     switch (h.kind)
     {
         case Hit::menu:       return "Engine " + juce::String (index + 1) + " menu";
         case Hit::strip:      return "Right-click for engine " + juce::String (index + 1) + "'s menu";
+        case Hit::screen:     return ! isBlank() && softRow < 0 ? "Right-click to set where this firmware draws its knobs" : juce::String();
+        case Hit::softKnob:   return "KNOB" + juce::String (h.id + 1) + " on the screen  (drag or scroll)";
         case Hit::loadButton: return "Open a .fwsc firmware package or a shared .fm1save setup";
         case Hit::toggle:     return "Panel buttons (or hold Shift over the engine)";
         case Hit::button:     return h.id >= 2 ? "Right-click to latch it down" : juce::String();

@@ -110,6 +110,9 @@ void FM1CeptionProcessor::startEngine (Slot& s)
         s.taken = 0;
         s.frac = 0.0;
         s.cur[0] = s.cur[1] = s.next[0] = s.next[1] = 0.0f;
+        s.route = -1;
+        s.held = {};
+        s.sustain = {};
     }
     s.handle = std::move (h);
 }
@@ -216,7 +219,7 @@ void FM1CeptionProcessor::initEngine (int slot)
 //==============================================================================
 void FM1CeptionProcessor::setLeadFromBlockSize (double sampleRate)
 {
-    ratio = FM1E_RATE / juce::jmax (8000.0, sampleRate);
+    ratio = (double) FM1E_RATE / juce::jmax (8000.0, sampleRate);
     // a host block's frames, and room for a DMA half and the emulation's unevenness
     lead = (int) std::ceil (maxBlock * ratio) + 1024;
     setLatencySamples (juce::roundToInt (lead / ratio));
@@ -273,8 +276,11 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         const juce::ScopedTryLock el (engineLock);
         if (el.isLocked())
         {
-            for (auto& s : slots)
+            const auto mode = getMidiMode();
+            const int sel = getSelected();
+            for (int si = 0; si < kMaxEngines; ++si)
             {
+                auto& s = slots[(size_t) si];
                 auto* e = s.live;
                 if (e == nullptr)
                     continue;
@@ -282,11 +288,25 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                 fm1e_set_master (e, s.master->get());
 
                 const auto start = s.taken;
-                const int rx = s.rxChannel.load(), tx = s.txChannel.load();
+                int rx = 0, tx = 0;
+                bool hears = true;
+                switch (mode)
+                {
+                    case MidiMode::selected:     hears = si == sel; tx = juce::jmax (1, s.txChannel.load()); break;
+                    case MidiMode::multiChannel: rx = si + 1; tx = 1; break;
+                    case MidiMode::custom:       rx = s.rxChannel.load(); tx = s.txChannel.load(); break;
+                }
+                const int route = hears ? rx * 32 + tx : -1;
+                if (route != s.route)
+                {
+                    releaseHeld (s, e, start + (juce::uint64) lead);
+                    s.route = route;
+                }
+
                 for (const auto meta : midi)
                 {
                     const auto* d = meta.data;
-                    if (meta.numBytes < 1)
+                    if (! hears || meta.numBytes < 1)
                         continue;
                     const int len = channelMessageLength (d[0]);
                     if (len == 0 || meta.numBytes < len)
@@ -295,9 +315,10 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                         continue;
                     const auto status = (juce::uint8) (tx != 0 ? ((d[0] & 0xf0) | (tx - 1)) : d[0]);
                     const auto frame = start + (juce::uint64) (meta.samplePosition * ratio) + (juce::uint64) lead;
-                    fm1e_push_midi (e, frame, status, len > 1 ? d[1] : 0, len > 2 ? d[2] : 0, (juce::uint8) len);
+                    sendMidi (s, e, frame, status, len > 1 ? d[1] : 0, len > 2 ? d[2] : 0, (juce::uint8) len);
                 }
 
+                float spk[2] {};
                 juce::uint64 starved = 0;
                 for (int i = 0; i < n; ++i)
                 {
@@ -320,11 +341,18 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                         s.frac -= 1.0;
                     }
                     const auto t = (float) juce::jmin (s.frac, 1.0);
-                    outL[i] += s.cur[0] + (s.next[0] - s.cur[0]) * t;
-                    outR[i] += s.cur[1] + (s.next[1] - s.cur[1]) * t;
+                    const float l = s.cur[0] + (s.next[0] - s.cur[0]) * t;
+                    const float r = s.cur[1] + (s.next[1] - s.cur[1]) * t;
+                    outL[i] += l;
+                    outR[i] += r;
+                    spk[0] = juce::jmax (spk[0], std::abs (l));
+                    spk[1] = juce::jmax (spk[1], std::abs (r));
                 }
                 if (starved > 0)
                     fm1e_starved (e, starved);
+                for (int c = 0; c < 2; ++c)
+                    if (spk[c] > s.peak[c].load (std::memory_order_relaxed))
+                        s.peak[c].store (spk[c], std::memory_order_relaxed);
             }
         }
     }
@@ -356,6 +384,44 @@ std::array<float, 2> FM1CeptionProcessor::takePeaks()
     return { peak[0].exchange (0.0f), peak[1].exchange (0.0f) };
 }
 
+std::array<float, 2> FM1CeptionProcessor::takeEnginePeaks (int slot)
+{
+    auto& s = slots[(size_t) juce::jlimit (0, kMaxEngines - 1, slot)];
+    return { s.peak[0].exchange (0.0f), s.peak[1].exchange (0.0f) };
+}
+
+void FM1CeptionProcessor::sendMidi (Slot& s, Fm1e* e, juce::uint64 frame, juce::uint8 status,
+                                    juce::uint8 d1, juce::uint8 d2, juce::uint8 len)
+{
+    const int ch = status & 0x0f, type = status & 0xf0;
+    if (type == 0x90 && d2 > 0)
+        s.held[(size_t) ch].set (d1 & 127);
+    else if (type == 0x80 || type == 0x90)
+        s.held[(size_t) ch].reset (d1 & 127);
+    else if (type == 0xb0 && d1 == 64)
+        s.sustain[(size_t) ch] = d2 >= 64;
+    else if (type == 0xb0 && (d1 == 120 || d1 == 123))
+        s.held[(size_t) ch].reset();
+    fm1e_push_midi (e, frame, status, d1, d2, len);
+}
+
+void FM1CeptionProcessor::releaseHeld (Slot& s, Fm1e* e, juce::uint64 frame)
+{
+    for (int ch = 0; ch < 16; ++ch)
+    {
+        if (s.sustain[(size_t) ch])
+            fm1e_push_midi (e, frame, (juce::uint8) (0xb0 | ch), 64, 0, 3);
+        auto& h = s.held[(size_t) ch];
+        for (int n = 0; n < 128 && h.any(); ++n)
+            if (h.test ((size_t) n))
+            {
+                fm1e_push_midi (e, frame, (juce::uint8) (0x80 | ch), (juce::uint8) n, 0, 3);
+                h.reset ((size_t) n);
+            }
+        s.sustain[(size_t) ch] = false;
+    }
+}
+
 //==============================================================================
 void FM1CeptionProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
@@ -364,6 +430,9 @@ void FM1CeptionProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("engines", numEngines.load(), nullptr);
     state.setProperty ("editorW", editorW.load(), nullptr);
     state.setProperty ("editorH", editorH.load(), nullptr);
+    state.setProperty ("midiMode", midiMode.load(), nullptr);
+    state.setProperty ("selected", selected.load(), nullptr);
+    state.setProperty ("viewLayout", viewLayout.load(), nullptr);
     state.appendChild (apvts.copyState(), nullptr);
 
     {
@@ -408,6 +477,9 @@ void FM1CeptionProcessor::setStateInformation (const void* data, int sizeInBytes
 
     editorW = (int) state.getProperty ("editorW", 0);
     editorH = (int) state.getProperty ("editorH", 0);
+    setMidiMode ((MidiMode) (int) state.getProperty ("midiMode", (int) MidiMode::selected));
+    setSelected ((int) state.getProperty ("selected", 0));
+    viewLayout = juce::jlimit (0, 1, (int) state.getProperty ("viewLayout", (int) ViewLayout::tiled));
 
     {
         const juce::ScopedLock sl (slotsLock);

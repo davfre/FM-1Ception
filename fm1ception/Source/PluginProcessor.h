@@ -78,11 +78,30 @@ public:
     int getFirmwareChannel (int slot) const { return slots[(size_t) slot].txChannel.load(); }
     void setFirmwareChannel (int slot, int ch) { slots[(size_t) slot].txChannel = juce::jlimit (0, 16, ch); }
 
+    /** How the host's MIDI reaches the engines.
+          selected      every channel to the selected engine, as received
+          multiChannel  channel N to engine N, moved to channel 1
+          custom        each engine's own receive and firmware channels */
+    enum class MidiMode { selected = 0, multiChannel = 1, custom = 2 };
+    MidiMode getMidiMode() const noexcept { return (MidiMode) midiMode.load(); }
+    void setMidiMode (MidiMode m) { midiMode = juce::jlimit (0, 2, (int) m); }
+
+    /** The engine Selected mode plays, and the one the tabbed layout shows. */
+    int getSelected() const noexcept { return juce::jmin (selected.load(), numEngines.load() - 1); }
+    void setSelected (int slot) { selected = juce::jlimit (0, kMaxEngines - 1, slot); }
+
+    enum class ViewLayout { tiled = 0, tabbed = 1 };
+    ViewLayout getViewLayout() const noexcept { return (ViewLayout) viewLayout.load(); }
+    void setViewLayout (ViewLayout l) { viewLayout = juce::jlimit (0, 1, (int) l); ++layout; }
+
     juce::RangedAudioParameter& masterParam (int slot) { return *slots[(size_t) slot].master; }
     juce::RangedAudioParameter& mainParam() { return *mainVolume; }
 
     /** The output's peaks since the last call (post main volume), per channel. */
     std::array<float, 2> takePeaks();
+
+    /** One engine's peaks since the last call (before the main volume), per channel. */
+    std::array<float, 2> takeEnginePeaks (int slot);
 
     juce::Point<int> getEditorSize() const { return { editorW.load(), editorH.load() }; }
     void setEditorSize (juce::Point<int> s) { editorW = s.x; editorH = s.y; }
@@ -102,8 +121,14 @@ private:
         juce::uint64 taken = 0;
         double frac = 0.0;
         float cur[2] {}, next[2] {};
+        // what the firmware was last sent (after any channel move), to let go of it when the
+        // routing changes: route -1 = hears nothing, else rx * 32 + tx
+        int route = -1;
+        std::array<std::bitset<128>, 16> held {};
+        std::array<bool, 16> sustain {};
 
         std::atomic<int> clockMhz { 240 }, rxChannel { 0 }, txChannel { 0 };
+        std::atomic<float> peak[2] { 0.0f, 0.0f };
         juce::AudioParameterFloat* master = nullptr;
     };
 
@@ -112,6 +137,8 @@ private:
     void stopEngine (Slot&);
     void runFileJob (int slot, const juce::File&, bool exporting);
     void setLeadFromBlockSize (double sampleRate);
+    static void sendMidi (Slot&, Fm1e*, juce::uint64 frame, juce::uint8 status, juce::uint8 d1, juce::uint8 d2, juce::uint8 len);
+    static void releaseHeld (Slot&, Fm1e*, juce::uint64 frame);
 
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioParameterFloat* mainVolume = nullptr;
@@ -120,8 +147,9 @@ private:
     juce::CriticalSection slotsLock;   // message side: engines coming and going, state
     juce::CriticalSection engineLock;  // held briefly to swap what the audio thread sees
     std::atomic<int> numEngines { 1 }, layout { 0 };
+    std::atomic<int> midiMode { (int) MidiMode::selected }, selected { 0 }, viewLayout { (int) ViewLayout::tiled };
 
-    double ratio = FM1E_RATE / 44100.0;
+    double ratio = (double) FM1E_RATE / 44100.0;
     int lead = 2048;
     int maxBlock = 512;
     juce::SmoothedValue<float> mainGain;

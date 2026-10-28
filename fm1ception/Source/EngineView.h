@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "OutputMeter.h"
 
 namespace fm1c
 {
@@ -21,6 +22,10 @@ namespace fm1c
 // from the screen's foot down to the toggle: shown while Shift is held over
 // the cell, or latched open by the toggle. Right-click one to latch it down
 // (for the firmware's button + knob combinations); click it to let go.
+//
+// Soft knobs: many firmwares draw KNOB1..4 across the screen. Once a row is
+// set for the firmware (right-click the screen; saved in its prefs file), a
+// band around that row is split in four and dragging there turns the knobs.
 //==============================================================================
 class EngineView : public juce::Component,
                    public juce::FileDragAndDropTarget,
@@ -41,8 +46,21 @@ public:
     /** Shift held while the pointer is over this cell. */
     void setShiftHeld (bool held);
 
+    /** Marked as the selected engine (the editor only marks one when there are several). */
+    void setSelected (bool isSelected);
+
+    /** The firmware's name ("" while blank) and the engine's level, for the tabs. */
+    juce::String firmwareName() const { return firmware; }
+    const MiniLevel& level() const noexcept { return meter; }
+
+    /** The soft knobs' screen row (0..239), -1 when none is set. Writes the firmware's prefs. */
+    int softKnobRow() const noexcept { return softRow; }
+    void setSoftKnobRow (int row);
+
     std::function<void (int slot)> onLoadRequest;
-    std::function<void (int slot)> onMenuRequest;
+    /** lcdRow: the screen row right-clicked, -1 off the screen. */
+    std::function<void (int slot, int lcdRow)> onMenuRequest;
+    std::function<void (int slot)> onSelect;
 
     void paint (juce::Graphics&) override;
     void resized() override {}
@@ -65,23 +83,25 @@ private:
     /** What a point in the design space is. */
     struct Hit
     {
-        enum Kind { none, strip, menu, loadButton, knob, button, key, toggle, popoverBack } kind = none;
-        int id = -1;   // knob: 0..7 (KNOB1-4, MASTER, SELECT, PRESETS, ALGO); button / key: matrix id
+        enum Kind { none, strip, screen, menu, loadButton, knob, softKnob, button, key, toggle, popoverBack } kind = none;
+        int id = -1;   // knob: 0..7 (KNOB1-4, MASTER, SELECT, PRESETS, ALGO); softKnob: 0..3; button / key: matrix id
     };
 
     juce::Point<float> toDesign (juce::Point<float> p) const;
     juce::AffineTransform designToLocal() const;
     void repaintDesign (juce::Rectangle<float> r);
     bool popoverShown() const;
-    Hit hitTest (juce::Point<float> d) const;
+    Hit hitAt (juce::Point<float> d) const;
     void press (int id, bool down);
     void releaseAll();
     void turn (int knob, int clicks);
     void setMaster (float v);
     bool isBlank() const;
 
+    int lcdRowAt (juce::Point<float> d) const;
     void paintStrip (juce::Graphics&);
     void paintScreen (juce::Graphics&);
+    void paintSoftKnobs (juce::Graphics&);
     void paintRows (juce::Graphics&);
     void paintKeyboard (juce::Graphics&);
     void paintToggle (juce::Graphics&);
@@ -97,7 +117,10 @@ private:
     std::array<juce::uint8, FM1E_LEDS> ledLevel {};
     Fm1eStatus status {};
     bool hasFirmware = false;
-    juce::String stripLeft, stripRight;
+    juce::String firmware, stripLeft, stripRight;
+    MiniLevel meter;
+    int softRow = -1, prefsRevision = -1;
+    bool selectedMark = false;
 
     std::array<bool, 64> down {};
     std::array<bool, 64> latched {};

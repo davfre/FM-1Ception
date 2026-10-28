@@ -15,6 +15,9 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "EngineView.h"
+#include "FirmwarePrefs.h"
+
+using namespace fm1c;
 
 namespace
 {
@@ -71,6 +74,37 @@ Stats render (FM1CeptionProcessor& p, double seconds, double noteAt = -1.0, doub
     return s;
 }
 
+/** A C4 on `channel` for `seconds` (note off after 1 s), at the host's pace: each engine's loudest moment. */
+std::array<float, 8> play (FM1CeptionProcessor& p, int channel, double seconds)
+{
+    juce::AudioBuffer<float> buf (2, kBlock);
+    std::array<float, 8> peaks {};
+    for (int i = 0; i < 8; ++i)
+        p.takeEnginePeaks (i);
+
+    const int blocks = (int) std::ceil (seconds * kSr / kBlock), offBlock = (int) (kSr / kBlock);
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    for (int b = 0; b < blocks; ++b)
+    {
+        juce::MidiBuffer midi;
+        if (channel > 0 && b == 0)
+            midi.addEvent (juce::MidiMessage::noteOn (channel, 60, (juce::uint8) 110), 0);
+        if (channel > 0 && b == offBlock)
+            midi.addEvent (juce::MidiMessage::noteOff (channel, 60), 0);
+        p.processBlock (buf, midi);
+        for (int i = 0; i < 8; ++i)
+        {
+            const auto pk = p.takeEnginePeaks (i);
+            peaks[(size_t) i] = juce::jmax (peaks[(size_t) i], pk[0], pk[1]);
+        }
+        const double due = t0 + (b + 1) * kBlock * 1000.0 / kSr;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (due > now)
+            juce::Thread::sleep ((int) (due - now));
+    }
+    return peaks;
+}
+
 juce::File findFirmware (int argc, char** argv)
 {
     if (argc > 1)
@@ -100,13 +134,30 @@ int snapshots (const juce::File& dir, const juce::File& fw)
     FM1CeptionProcessor p;
     p.prepareToPlay (kSr, kBlock);
 
-    auto shoot = [&] (int n, int w, int h, const juce::String& file)
+    // every engine hears every channel, so a chord lights all the meters
+    p.setMidiMode (FM1CeptionProcessor::MidiMode::custom);
+
+    auto shoot = [&] (int n, int w, int h, const juce::String& file,
+                      FM1CeptionProcessor::ViewLayout layout = FM1CeptionProcessor::ViewLayout::tiled)
     {
         p.setNumEngines (n);
+        p.setViewLayout (layout);
+        p.setSelected (n > 1 ? 2 : 0);
         for (int i = 0; i < n; ++i)
             if (auto e = p.engine (i); e != nullptr && ! e->hasFirmware() && (n == 1 || i != 1))
                 p.loadFileNow (i, fw);
-        juce::Thread::sleep (3500);
+        juce::Thread::sleep (3000);
+
+        juce::AudioBuffer<float> buf (2, kBlock);
+        for (int b = 0; b < 48; ++b)
+        {
+            juce::MidiBuffer midi;
+            if (b == 0)
+                for (const int note : { 48, 55, 60, 64 })
+                    midi.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 120), 0);
+            p.processBlock (buf, midi);
+            juce::Thread::sleep (10);
+        }
 
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
         ed->setSize (w, h);
@@ -115,7 +166,7 @@ int snapshots (const juce::File& dir, const juce::File& fw)
             if (auto* v = dynamic_cast<fm1c::EngineView*> (c))
             {
                 v->refresh();
-                v->setShiftHeld (n > 1 && k++ == 2);
+                v->setShiftHeld (n > 1 && layout == FM1CeptionProcessor::ViewLayout::tiled && k++ == 2);
             }
         const auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
         juce::FileOutputStream out (dir.getChildFile (file));
@@ -128,6 +179,7 @@ int snapshots (const juce::File& dir, const juce::File& fw)
     shoot (1, 480, 664, "one.png");
     shoot (4, 1300, 470, "four-wide.png");
     shoot (4, 760, 900, "four-square.png");
+    shoot (4, 480, 688, "four-tabbed.png", FM1CeptionProcessor::ViewLayout::tabbed);
     return 0;
 }
 } // namespace
@@ -171,6 +223,9 @@ int main (int argc, char** argv)
         p.setClock (1, 160);
         p.setReceiveChannel (1, 3);
         p.setFirmwareChannel (2, 5);
+        p.setMidiMode (FM1CeptionProcessor::MidiMode::multiChannel);
+        p.setSelected (2);
+        p.setViewLayout (FM1CeptionProcessor::ViewLayout::tabbed);
         p.mainParam().setValueNotifyingHost (p.mainParam().convertTo0to1 (0.5f));
 
         juce::MemoryBlock state;
@@ -183,10 +238,28 @@ int main (int argc, char** argv)
         check (q.getClock (1) == 160 && q.getClock (0) == (int) fm1e_default_mhz(), "clocks");
         check (q.getReceiveChannel (1) == 3 && q.getFirmwareChannel (2) == 5, "MIDI channels");
         check (std::abs (q.mainParam().convertFrom0to1 (q.mainParam().getValue()) - 0.5f) < 1.0e-4f, "main volume");
+        check (q.getMidiMode() == FM1CeptionProcessor::MidiMode::multiChannel, "MIDI mode");
+        check (q.getSelected() == 2, "the selected engine");
+        check (q.getViewLayout() == FM1CeptionProcessor::ViewLayout::tabbed, "the layout");
 
         const char junk[] = "not a state at all";
         q.setStateInformation (junk, (int) sizeof (junk));
         check (q.getNumEngines() == 3, "a foreign state is ignored");
+
+        q.setNumEngines (2);
+        check (q.getSelected() == 1, "the selection follows the engine count down");
+    }
+
+    std::cout << "\n=== firmware preferences ===" << std::endl;
+    {
+        const juce::String name ("FM-1Ception smoke test");
+        const int rev = prefs::revision().load();
+        prefs::setSoftKnobRow (name, 132);
+        check (prefs::softKnobRow (name) == 132 && prefs::fileFor (name).existsAsFile(), "a soft knob row is kept per firmware");
+        check (prefs::revision().load() != rev, "and the views hear of it");
+        prefs::setSoftKnobRow (name, -1);
+        check (prefs::softKnobRow (name) == -1 && ! prefs::fileFor (name).existsAsFile(), "removing it leaves no file");
+        check (prefs::softKnobRow ("some firmware never seen") == -1, "a firmware with none set has none");
     }
 
     const auto fw = findFirmware (argc, argv);
@@ -250,6 +323,42 @@ int main (int argc, char** argv)
             }
             if (keepsUp)
                 check (late == 0, "none of them falls behind");
+        }
+        {
+            using Mode = FM1CeptionProcessor::MidiMode;
+            FM1CeptionProcessor p;
+            p.prepareToPlay (kSr, kBlock);
+            p.setNumEngines (2);
+            p.loadFileNow (0, fw);
+            p.loadFileNow (1, fw);
+            const auto idle = play (p, 0, 3.0);
+            if (idle[0] > 1.0e-4f || idle[1] > 1.0e-4f)
+            {
+                std::cout << "  (this firmware makes sound with no note: routing checks skipped)" << std::endl;
+            }
+            else
+            {
+                auto heard = [] (const std::array<float, 8>& pk, int slot)
+                {
+                    return juce::String ("engine ") + juce::String (slot + 1) + " " + juce::String (pk[(size_t) slot], 4);
+                };
+                p.setMidiMode (Mode::selected);
+                p.setSelected (1);
+                auto pk = play (p, 7, 2.5);
+                check (pk[1] > 1.0e-3f && pk[0] < 1.0e-4f,
+                       "Selected: Ch 7 plays only the selected engine (" + heard (pk, 0) + ", " + heard (pk, 1) + ")");
+
+                p.setMidiMode (Mode::multiChannel);
+                play (p, 0, 2.0);
+                pk = play (p, 1, 2.5);
+                check (pk[0] > 1.0e-3f && pk[1] < 1.0e-4f, "MultiChannel: Ch 1 plays engine 1 (" + heard (pk, 1) + ")");
+                play (p, 0, 2.0);
+                pk = play (p, 2, 2.5);
+                check (pk[1] > 1.0e-3f && pk[0] < 1.0e-4f, "MultiChannel: Ch 2 plays engine 2 (" + heard (pk, 0) + ")");
+                play (p, 0, 2.0);
+                pk = play (p, 3, 2.5);
+                check (pk[0] < 1.0e-4f && pk[1] < 1.0e-4f, "MultiChannel: Ch 3 plays neither");
+            }
         }
     }
 

@@ -159,4 +159,39 @@ void OutputMeter::refreshTooltip()
     setTooltip ("Main Volume " + param.getCurrentValueAsText()
                 + "   (drag or scroll; double-click for 0 dB)");
 }
+
+//==============================================================================
+bool MiniLevel::push (std::array<float, 2> peaks)
+{
+    bool changed = false;
+    for (int c = 0; c < 2; ++c)
+    {
+        const float in = peaks[(size_t) c] > 0.0f ? 20.0f * std::log10 (peaks[(size_t) c]) : kFloorDb;
+        db[c] = juce::jmax (in, db[c] - 0.8f, kFloorDb);   // ~24 dB a second at 30 Hz
+        const int n = (int) std::ceil (juce::jlimit (0.0f, 1.0f, (db[c] + kRangeDb) / kRangeDb) * kSegments - 0.004f);
+        changed = changed || n != lit[c];
+        lit[c] = n;
+    }
+    return changed;
+}
+
+void MiniLevel::paint (juce::Graphics& g, juce::Rectangle<float> r, bool vertical) const
+{
+    const float gap = 1.0f;
+    for (int c = 0; c < 2; ++c)
+    {
+        const auto lane = vertical ? r.withWidth ((r.getWidth() - gap) * 0.5f).translated ((float) c * (r.getWidth() + gap) * 0.5f, 0.0f)
+                                   : r.withHeight ((r.getHeight() - gap) * 0.5f).translated (0.0f, (float) c * (r.getHeight() + gap) * 0.5f);
+        const float len = (vertical ? lane.getHeight() : lane.getWidth()) / (float) kSegments;
+        for (int s = 0; s < kSegments; ++s)
+        {
+            const auto col = s >= kSegments - 1 ? theme::meterRed : s >= kSegments * 7 / 10 ? theme::meterYellow : theme::meterGreen;
+            g.setColour (s < lit[c] ? col : col.interpolatedWith (theme::meterOff, 6.0f / 7.0f));
+            if (vertical)
+                g.fillRect (lane.getX(), lane.getBottom() - (float) (s + 1) * len, lane.getWidth(), len - gap);
+            else
+                g.fillRect (lane.getX() + (float) s * len, lane.getY(), len - gap, lane.getHeight());
+        }
+    }
+}
 } // namespace fm1c

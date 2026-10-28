@@ -145,6 +145,7 @@ set(FM1C_SOURCES
     Source/PluginEditor.cpp
     Source/EngineView.h
     Source/EngineView.cpp
+    Source/FirmwarePrefs.h
     Source/OutputMeter.h
     Source/OutputMeter.cpp
     Source/Theme.h

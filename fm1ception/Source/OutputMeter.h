@@ -46,4 +46,22 @@ private:
     juce::uint32 holdAt[2] {}, lastPush = 0;
     bool dragging = false;
 };
+
+//==============================================================================
+/** A small two-channel level in the same colours: peaks in, decaying dB out. */
+struct MiniLevel
+{
+    static constexpr float kRangeDb = 48.0f;
+    static constexpr int kSegments = 10;
+    float db[2] { -120.0f, -120.0f };
+
+    /** Linear peaks since the last call, ~30 Hz. Returns whether the drawing changed. */
+    bool push (std::array<float, 2> peaks);
+
+    /** Two rows (horizontal) or columns (vertical) of segments filling r. */
+    void paint (juce::Graphics&, juce::Rectangle<float> r, bool vertical) const;
+
+private:
+    int lit[2] {};
+};
 } // namespace fm1c
