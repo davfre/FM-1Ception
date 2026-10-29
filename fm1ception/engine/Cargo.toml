@@ -10,7 +10,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 fm1-core = { path = "../third_party/fm1-emu/crates/fm1-core" }
-fm1-soc = { path = "../third_party/fm1-emu/crates/fm1-soc" }
+fm1-soc = { path = "../third_party/fm1-emu/crates/fm1-soc", features = ["state"] }
 rtrb = "0.3"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }

@@ -8,15 +8,27 @@ namespace
 {
 using R = juce::Rectangle<float>;
 
-const R kStrip  { 0.0f, 0.0f, 480.0f, 16.0f };
-const R kScreen { 0.0f, 16.0f, 480.0f, 480.0f };
-const R kRows   { 0.0f, 496.0f, 480.0f, 128.0f };
-const R kLoad   { 150.0f, 236.0f, 180.0f, 40.0f };
-const R kMenu   { 458.0f, 0.0f, 22.0f, 16.0f };
-const R kToggle { 452.0f, 592.0f, 24.0f, 26.0f };
-const R kPopover { 4.0f, 498.0f, 472.0f, 90.0f };
-const R kKeys   { 248.0f, 564.0f, 196.0f, 54.0f };
-const R kMeter  { 41.0f, 567.0f, 8.0f, 24.0f };
+const R kStrip  { 0.0f, 0.0f, 480.0f, 20.0f };
+const R kScreen { 0.0f, 20.0f, 480.0f, 480.0f };
+const R kRows   { 0.0f, 500.0f, 480.0f, 128.0f };
+const R kLoad   { 150.0f, 240.0f, 180.0f, 40.0f };
+const R kMenu   { 456.0f, 0.0f, 24.0f, 20.0f };
+const R kToggle { 452.0f, 596.0f, 24.0f, 26.0f };
+const R kPopover { 4.0f, 502.0f, 472.0f, 90.0f };
+const R kKeys   { 248.0f, 568.0f, 196.0f, 54.0f };
+
+// the strip's M, S and level: a solid bar with the MASTER caret over it
+const R kMute   { 302.0f, 4.0f, 15.0f, 12.0f };
+const R kSolo   { 320.0f, 4.0f, 15.0f, 12.0f };
+const R kLevel  { 338.0f, 0.0f, 116.0f, 20.0f };
+const R kTrack  { 342.0f, 10.0f, 108.0f, 5.0f };
+
+/** The strip level's and the caret's scale: dB over the top 60, the caret at the gain v^2 of the
+    MASTER pot's v (SHRUB's curve, and the main volume's). */
+constexpr float kLevelRangeDb = 60.0f;
+float levelPos (float db) { return juce::jlimit (0.0f, 1.0f, (db + kLevelRangeDb) / kLevelRangeDb); }
+float masterPos (float v) { return v > 0.0f ? levelPos (40.0f * std::log10 (v)) : 0.0f; }
+float masterAt (float pos) { return pos <= 0.0f ? 0.0f : std::pow (10.0f, (kLevelRangeDb * (juce::jmin (1.0f, pos) - 1.0f)) / 40.0f); }
 
 /** Half the soft knobs' band, in screen rows. */
 constexpr int kSoftBand = 22;
@@ -25,20 +37,20 @@ struct KnobSpec
 {
     float cx, cy, r;
     const char* label;
-    int enc;   // the matrix encoder; -1: the MASTER pot
+    int enc;   // the matrix encoder
 };
 
-const KnobSpec kKnobs[8] {
-    {  60.0f, 520.0f, 17.0f, "KNOB1", 2 },
-    { 180.0f, 520.0f, 17.0f, "KNOB2", 3 },
-    { 300.0f, 520.0f, 17.0f, "KNOB3", 4 },
-    { 420.0f, 520.0f, 17.0f, "KNOB4", 5 },
-    {  24.0f, 579.0f, 12.0f, "MASTER", -1 },
-    {  68.0f, 579.0f, 12.0f, "SELECT", 0 },
-    { 112.0f, 579.0f, 12.0f, "PRESETS", 6 },
-    { 156.0f, 579.0f, 12.0f, "ALGO", 1 },
+// KNOB1..4 go unlabelled: the firmware's screen names them
+constexpr int kNumKnobs = 7, kPresetsKnob = 5;
+const KnobSpec kKnobs[kNumKnobs] {
+    {  60.0f, 530.0f, 17.0f, "KNOB1", 2 },
+    { 180.0f, 530.0f, 17.0f, "KNOB2", 3 },
+    { 300.0f, 530.0f, 17.0f, "KNOB3", 4 },
+    { 420.0f, 530.0f, 17.0f, "KNOB4", 5 },
+    {  28.0f, 586.0f, 16.0f, "SELECT", 0 },
+    {  82.0f, 586.0f, 16.0f, "PRESETS", 6 },
+    { 136.0f, 586.0f, 16.0f, "ALGO", 1 },
 };
-constexpr int kMasterKnob = 4;
 
 struct ButtonSpec
 {
@@ -48,8 +60,8 @@ struct ButtonSpec
 };
 
 const ButtonSpec kOct[2] {
-    { { 182.0f, 566.0f, 26.0f, 28.0f }, "OCT-", 0 },
-    { { 212.0f, 566.0f, 26.0f, 28.0f }, "OCT+", 1 },
+    { { 164.0f, 576.0f, 36.0f, 20.0f }, "OCT-", 0 },
+    { { 204.0f, 576.0f, 36.0f, 20.0f }, "OCT+", 1 },
 };
 
 constexpr const char* kPanelLabels[12] { "FX", "SCL", "ENV", "LFO", "EDIT", "GLO",
@@ -90,7 +102,8 @@ juce::uint8 levelOf (float fraction)
     return (juce::uint8) juce::roundToInt (juce::jlimit (0.0f, 1.0f, fraction / 0.08f) * 16.0f);
 }
 
-void paintKnob (juce::Graphics& g, const KnobSpec& k, float angle, float glow)
+/** A knob in the panel's grey, or (rose) in the mini keyboard's colour. */
+void paintKnob (juce::Graphics& g, const KnobSpec& k, float angle, float glow, bool rose)
 {
     const juce::Point<float> c { k.cx, k.cy };
     g.setColour (juce::Colour (0xff222326));
@@ -100,11 +113,15 @@ void paintKnob (juce::Graphics& g, const KnobSpec& k, float angle, float glow)
         g.setColour (theme::amber.withAlpha (0.75f * glow));
         g.fillEllipse (R (k.r * 2.0f + 5.0f, k.r * 2.0f + 5.0f).withCentre (c));
     }
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff585b62), c.x, c.y - k.r,
-                                             juce::Colour (0xff2c2e32), c.x, c.y + k.r, false));
+    const auto key = theme::keyTop.withMultipliedSaturation (1.6f);
+    const auto skirtTop = rose ? key.brighter (0.3f) : juce::Colour (0xff585b62);
+    const auto skirtBot = rose ? key.darker (0.5f) : juce::Colour (0xff2c2e32);
+    const auto capTop = rose ? key.brighter (0.55f) : juce::Colour (0xff6d7178);
+    const auto capBot = rose ? key.darker (0.1f) : juce::Colour (0xff3a3d43);
+    g.setGradientFill (juce::ColourGradient (skirtTop, c.x, c.y - k.r, skirtBot, c.x, c.y + k.r, false));
     g.fillEllipse (R (k.r * 2.0f, k.r * 2.0f).withCentre (c));
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6d7178), c.x - k.r * 0.5f, c.y - k.r * 0.5f,
-                                             juce::Colour (0xff3a3d43), c.x + k.r * 0.5f, c.y + k.r * 0.5f, false));
+    g.setGradientFill (juce::ColourGradient (capTop, c.x - k.r * 0.5f, c.y - k.r * 0.5f,
+                                             capBot, c.x + k.r * 0.5f, c.y + k.r * 0.5f, false));
     g.fillEllipse (R (k.r * 1.44f, k.r * 1.44f).withCentre (c));
     const auto dir = juce::Point<float> (std::sin (angle), -std::cos (angle));
     g.setColour (juce::Colour (0xffeeeae2));
@@ -145,7 +162,7 @@ void EngineView::releaseAll()
         latched[(size_t) id] = false;
         press (id, false);
     }
-    if (grab && grab->hit.kind == Hit::knob && grab->hit.id == kMasterKnob)
+    if (grab && grab->hit.kind == Hit::level)
         proc.masterParam (index).endChangeGesture();
     grab.reset();
 }
@@ -223,6 +240,12 @@ EngineView::Hit EngineView::hitAt (juce::Point<float> d) const
         return { Hit::toggle };
     if (kMenu.contains (d))
         return { Hit::menu };
+    if (kMute.expanded (1.0f, 4.0f).contains (d))
+        return { Hit::mute };
+    if (kSolo.expanded (1.0f, 4.0f).contains (d))
+        return { Hit::solo };
+    if (kLevel.contains (d))
+        return { Hit::level };
     if (kStrip.contains (d))
         return { Hit::strip };
     if (isBlank() && kLoad.contains (d))
@@ -234,7 +257,7 @@ EngineView::Hit EngineView::hitAt (juce::Point<float> d) const
         return { Hit::screen };
     }
 
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < kNumKnobs; ++i)
         if (d.getDistanceFrom ({ kKnobs[i].cx, kKnobs[i].cy }) <= kKnobs[i].r + 5.0f)
             return { Hit::knob, i };
     for (const auto& b : kOct)
@@ -274,8 +297,12 @@ void EngineView::setMaster (float v)
 {
     auto& p = proc.masterParam (index);
     p.setValueNotifyingHost (p.convertTo0to1 (juce::jlimit (0.0f, 1.0f, v)));
-    glow[kMasterKnob] = 10;
-    repaintDesign (kRows);
+    repaintDesign (kLevel);
+}
+
+void EngineView::setMasterAt (float designX)
+{
+    setMaster (masterAt ((designX - kTrack.getX()) / kTrack.getWidth()));
 }
 
 //==============================================================================
@@ -289,14 +316,51 @@ void EngineView::refresh()
             rows = true;
         }
 
-    if (meter.push (proc.takeEnginePeaks (index)))
-        repaintDesign (kMeter);
+    meter.push (proc.takeEnginePeaks (index));
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        const float db = juce::jmax (meter.db[0], meter.db[1]);
+        if (db >= holdDb)
+        {
+            holdDb = db;
+            holdAt = now;
+        }
+        else if (now - holdAt > 1000)
+        {
+            holdDb = juce::jmax (-120.0f, holdDb - 1.2f);
+        }
+
+        const auto& p = proc.masterParam (index);
+        auto quarters = [] (float pos) { return (int) std::round (pos * kTrack.getWidth() * 4.0f); };
+        const int lvl = quarters (levelPos (db)), hold = quarters (levelPos (holdDb));
+        const int caret = quarters (masterPos (p.convertFrom0to1 (p.getValue())));
+        const bool m = proc.isMuted (index), s = proc.isSoloed (index), audible = proc.isAudible (index);
+        if (m != drawnMute || s != drawnSolo || audible != drawnAudible)
+        {
+            drawnMute = m;
+            drawnSolo = s;
+            drawnAudible = audible;
+            drawnLevel = -1;
+            repaintDesign (kMute.getUnion (kSolo));
+        }
+        if (lvl != drawnLevel || hold != drawnHold || caret != drawnCaret)
+        {
+            drawnLevel = lvl;
+            drawnHold = hold;
+            drawnCaret = caret;
+            repaintDesign (kLevel);
+        }
+    }
 
     if (handle != nullptr)
     {
         std::array<float, FM1E_LEDS> fractions {};
         Fm1eStatus st {};
         fm1e_view (handle->get(), lcdRaw.data(), fractions.data(), &st);
+
+        char why[256] {};
+        if (fm1e_restore_result (handle->get(), why, sizeof (why)) < 0)
+            handle->post ("Started afresh: " + juce::String::fromUTF8 (why), 8000);
 
         for (size_t i = 0; i < fractions.size(); ++i)
         {
@@ -398,14 +462,19 @@ void EngineView::paintStrip (juce::Graphics& g)
     g.setColour (theme::header);
     g.fillRect (kStrip);
 
-    const auto num = R (2.0f, 2.0f, 14.0f, 12.0f);
+    const auto num = R (3.0f, 4.0f, 15.0f, 12.0f);
     g.setColour (handle != nullptr && hasFirmware ? theme::amber : theme::tray);
     g.fillRoundedRectangle (num, 2.0f);
     g.setColour (handle != nullptr && hasFirmware ? theme::header : theme::dimSilk);
     g.setFont (theme::font (10.0f, true));
     g.drawText (juce::String (index + 1), num, juce::Justification::centred);
 
-    auto body = kStrip.withTrimmedLeft (22.0f).withTrimmedRight (kMenu.getWidth() + 4.0f);
+    const bool muted = proc.isMuted (index), soloed = proc.isSoloed (index);
+    paintStripButton (g, kMute, "M", muted, theme::warn, ! muted && ! proc.isAudible (index));
+    paintStripButton (g, kSolo, "S", soloed, theme::meterYellow, false);
+    paintStripLevel (g);
+
+    auto body = kStrip.withLeft (24.0f).withRight (kMute.getX() - 6.0f);
     const auto small = theme::font (10.0f);
     const float rightW = juce::jmin (body.getWidth() * 0.6f,
                                      juce::GlyphArrangement::getStringWidth (small, stripRight) + 2.0f);
@@ -426,6 +495,63 @@ void EngineView::paintStrip (juce::Graphics& g)
         g.setColour (theme::amber);
         g.fillRect (kStrip.withTop (kStrip.getBottom() - 2.0f));
     }
+}
+
+void EngineView::paintStripButton (juce::Graphics& g, R r, const char* label, bool on, juce::Colour onColour, bool outlined)
+{
+    g.setColour (on ? onColour : theme::tray);
+    g.fillRoundedRectangle (r, 2.0f);
+    if (outlined)
+    {
+        // silenced by another engine's solo
+        g.setColour (onColour.withAlpha (0.8f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 2.0f, 1.0f);
+    }
+    g.setColour (on ? theme::header : outlined ? onColour : theme::dimSilk);
+    g.setFont (theme::font (9.0f, true));
+    g.drawText (label, r, juce::Justification::centred);
+}
+
+void EngineView::paintStripLevel (juce::Graphics& g)
+{
+    const auto t = kTrack;
+    g.setColour (juce::Colour (0xff1c1d20));
+    g.fillRoundedRectangle (t.expanded (1.0f), 1.5f);
+    g.setColour (theme::meterOff);
+    g.fillRect (t);
+
+    // a solid bar, green into yellow into red along the track
+    juce::ColourGradient grad (theme::meterGreen, t.getX(), 0.0f, theme::meterRed, t.getRight(), 0.0f, false);
+    grad.addColour (0.62, theme::meterGreen);
+    grad.addColour (0.82, theme::meterYellow);
+    grad.addColour (0.94, theme::meterYellow.interpolatedWith (theme::meterRed, 0.5f));
+    const bool audible = proc.isAudible (index);
+    if (! audible)
+        grad.multiplyOpacity (0.35f);
+
+    const float db = juce::jmax (meter.db[0], meter.db[1]);
+    const float lit = levelPos (db) * t.getWidth();
+    if (lit > 0.0f)
+    {
+        g.setGradientFill (grad);
+        g.fillRect (t.withWidth (lit));
+    }
+    if (holdDb > -kLevelRangeDb)
+    {
+        const float pos = levelPos (holdDb);
+        const float hx = t.getX() + juce::jmax (1.5f, pos * t.getWidth()) - 1.5f;
+        g.setColour (grad.getColourAtPosition (pos));
+        g.fillRect (hx, t.getY(), 1.5f, t.getHeight());
+    }
+
+    // the MASTER pot: a caret pointing down at the track
+    const auto& p = proc.masterParam (index);
+    const float v = p.convertFrom0to1 (p.getValue());
+    const float cx = t.getX() + masterPos (v) * t.getWidth();
+    juce::Path caret;
+    caret.addTriangle (cx - 3.5f, 3.0f, cx + 3.5f, 3.0f, cx, 8.0f);
+    g.setColour (v > 0.0f ? juce::Colours::white : theme::dimSilk);
+    g.fillPath (caret);
 }
 
 void EngineView::paintScreen (juce::Graphics& g)
@@ -532,26 +658,20 @@ void EngineView::paintRows (juce::Graphics& g)
     g.setColour (juce::Colours::black.withAlpha (0.25f));
     g.fillRect (kRows.withHeight (1.0f).translated (0.0f, 60.0f).withTrimmedLeft (8.0f).withTrimmedRight (8.0f));
 
-    const auto& master = proc.masterParam (index);
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < kNumKnobs; ++i)
     {
         const auto& k = kKnobs[i];
-        const float angle = k.enc < 0
-            ? juce::degreesToRadians (-135.0f + 270.0f * master.convertFrom0to1 (master.getValue()))
-            : juce::degreesToRadians ((float) clicks[(size_t) i] * 18.0f);
-        paintKnob (g, k, angle, juce::jmin (1.0f, (float) glow[(size_t) i] / 10.0f));
-        const float labelSize = i < 4 ? 9.0f : 7.5f;
+        const float angle = juce::degreesToRadians ((float) clicks[(size_t) i] * 18.0f);
+        paintKnob (g, k, angle, juce::jmin (1.0f, (float) glow[(size_t) i] / 10.0f), i == kPresetsKnob);
+        if (i < 4)
+            continue;
         g.setColour (theme::silk);
-        g.setFont (theme::font (labelSize, true));
-        g.drawText (k.label, R (k.cx - 30.0f, k.cy + k.r + 3.0f, 60.0f, labelSize + 2.0f), juce::Justification::centred);
+        g.setFont (theme::font (9.5f, true));
+        g.drawText (k.label, R (k.cx - 30.0f, k.cy + k.r + 3.0f, 60.0f, 11.5f), juce::Justification::centred);
     }
 
     for (const auto& b : kOct)
-        paintButton (g, b.r, b.label, b.id, 7.5f);
-
-    g.setColour (juce::Colour (0xff1c1d20));
-    g.fillRoundedRectangle (kMeter.expanded (1.5f), 1.5f);
-    meter.paint (g, kMeter, true);
+        paintButton (g, b.r, b.label, b.id, 9.5f);
 
     paintKeyboard (g);
     paintToggle (g);
@@ -682,14 +802,25 @@ void EngineView::mouseDown (const juce::MouseEvent& e)
             press (h.id, true);
             g.held = h.id;
             break;
-        case Hit::knob:
-            if (h.id == kMasterKnob)
-                proc.masterParam (index).beginChangeGesture();
+        case Hit::mute:
+            proc.setMuted (index, ! proc.isMuted (index));
+            repaintDesign (kStrip);
+            return;
+        case Hit::solo:
+            if (e.mods.isCommandDown() || e.mods.isAltDown())
+                proc.soloExclusive (index);
+            else
+                proc.setSoloed (index, ! proc.isSoloed (index));
+            repaintDesign (kStrip);
+            return;
+        case Hit::level:
+            proc.masterParam (index).beginChangeGesture();
+            setMasterAt (d.x);
             break;
         case Hit::softKnob:
             repaintDesign (kScreen);
             break;
-        case Hit::none: case Hit::strip: case Hit::screen: case Hit::popoverBack:
+        case Hit::none: case Hit::strip: case Hit::screen: case Hit::popoverBack: case Hit::knob:
             break;
     }
     grab = g;
@@ -713,10 +844,9 @@ void EngineView::mouseDrag (const juce::MouseEvent& e)
             press (g.held, true);
         }
     }
-    else if (g.hit.kind == Hit::knob && g.hit.id == kMasterKnob)
+    else if (g.hit.kind == Hit::level)
     {
-        const auto& p = proc.masterParam (index);
-        setMaster (p.convertFrom0to1 (p.getValue()) + (g.lastY - y) * 0.005f);
+        setMasterAt (toDesign (e.position).x);
     }
     else if (g.hit.kind == Hit::knob || g.hit.kind == Hit::softKnob)
     {
@@ -735,7 +865,7 @@ void EngineView::mouseUp (const juce::MouseEvent&)
         return;
     if (grab->held >= 0 && ! latched[(size_t) grab->held])
         press (grab->held, false);
-    if (grab->hit.kind == Hit::knob && grab->hit.id == kMasterKnob)
+    if (grab->hit.kind == Hit::level)
         proc.masterParam (index).endChangeGesture();
     const bool soft = grab->hit.kind == Hit::softKnob;
     grab.reset();
@@ -746,29 +876,36 @@ void EngineView::mouseUp (const juce::MouseEvent&)
 void EngineView::mouseDoubleClick (const juce::MouseEvent& e)
 {
     const auto h = hitAt (toDesign (e.position));
-    if (h.kind == Hit::knob && h.id == kMasterKnob)
+    if (h.kind == Hit::level)
     {
         auto& p = proc.masterParam (index);
         p.beginChangeGesture();
         setMaster (FM1CeptionProcessor::kDefaultMaster);
         p.endChangeGesture();
     }
+    else if (h.kind == Hit::mute || h.kind == Hit::solo)
+    {
+        // the second click of a double-click
+        mouseDown (e);
+    }
 }
 
 void EngineView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
     const auto h = hitAt (toDesign (e.position));
-    if (h.kind != Hit::knob && h.kind != Hit::softKnob)
-        return;
     const float delta = w.isReversed ? -w.deltaY : w.deltaY;
-    if (h.kind == Hit::knob && h.id == kMasterKnob)
+    if (h.kind == Hit::level)
     {
+        // 12 dB a wheel step, on the caret's scale
         auto& p = proc.masterParam (index);
+        const float pos = masterPos (p.convertFrom0to1 (p.getValue())) + delta * 12.0f / kLevelRangeDb;
         p.beginChangeGesture();
-        setMaster (p.convertFrom0to1 (p.getValue()) + delta * 0.25f);
+        setMaster (masterAt (juce::jlimit (0.0f, 1.0f, pos)));
         p.endChangeGesture();
         return;
     }
+    if (h.kind != Hit::knob && h.kind != Hit::softKnob)
+        return;
     wheelAcc += delta;
     constexpr float kStep = 0.08f;
     const int n = (int) (wheelAcc / kStep);
@@ -813,10 +950,12 @@ juce::String EngineView::getTooltip()
         case Hit::loadButton: return "Open a .fwsc firmware package or a shared .fm1save setup";
         case Hit::toggle:     return "Panel buttons (or hold Shift over the engine)";
         case Hit::button:     return h.id >= 2 ? "Right-click to latch it down" : juce::String();
-        case Hit::knob:
-            return h.id == kMasterKnob ? "MASTER " + proc.masterParam (index).getCurrentValueAsText()
-                                         + "  (drag, scroll; double-click to reset)"
-                                       : juce::String (kKnobs[h.id].label) + "  (drag or scroll)";
+        case Hit::knob:       return juce::String (kKnobs[h.id].label) + "  (drag or scroll)";
+        case Hit::mute:       return "Mute engine " + juce::String (index + 1);
+        case Hit::solo:       return "Solo engine " + juce::String (index + 1) + "  (Cmd- or Alt-click: solo it alone)";
+        case Hit::level:
+            return "Engine " + juce::String (index + 1) + " level; the caret is its MASTER "
+                   + proc.masterParam (index).getCurrentValueAsText() + "  (drag or scroll; double-click to reset)";
         case Hit::none: case Hit::key: case Hit::popoverBack:
             break;
     }
@@ -827,7 +966,7 @@ juce::String EngineView::getTooltip()
 bool EngineView::isInterestedInFileDrag (const juce::StringArray& files)
 {
     for (const auto& f : files)
-        if (juce::File (f).hasFileExtension ("fwsc;fm1save;json"))
+        if (juce::File (f).hasFileExtension ("fwsc;fm1save;json;fm1ception"))
             return handle != nullptr;
     return false;
 }
@@ -849,7 +988,7 @@ void EngineView::filesDropped (const juce::StringArray& files, int, int)
     dropHover = false;
     repaintDesign (kScreen);
     for (const auto& f : files)
-        if (juce::File (f).hasFileExtension ("fwsc;fm1save;json"))
+        if (juce::File (f).hasFileExtension ("fwsc;fm1save;json;fm1ception"))
         {
             proc.loadFile (index, juce::File (f));
             return;

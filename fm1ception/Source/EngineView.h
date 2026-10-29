@@ -8,15 +8,17 @@ namespace fm1c
 {
 //==============================================================================
 // One engine's cell: the FM-1's screen at 2x, and everything else small under
-// it, drawn in a 480 x 624 design space scaled to the cell.
+// it, drawn in a 480 x 628 design space scaled to the cell.
 //
-//   strip    engine number, firmware, clock and speed (right-click: the
-//            engine's menu)
+//   strip    engine number, firmware, clock and speed, then M(ute), S(olo)
+//            and the engine's level with the MASTER pot as a caret over it
+//            (drag or scroll it); right-click: the engine's menu
 //   screen   240 x 240 at 2x (a LOAD FIRMWARE button while it is blank)
-//   row 1    KNOB1..4, straight under the screen
-//   row 2    MASTER SELECT PRESETS ALGO and OCT- / OCT+ under the screen's
-//            left half; a mini keyboard (F3..G5) under its right half, and
-//            the panel buttons' toggle in the corner
+//   row 1    KNOB1..4, straight under the screen (unlabelled: the firmware's
+//            screen names them)
+//   row 2    SELECT PRESETS ALGO and OCT- / OCT+ under the screen's left
+//            half; a mini keyboard (F3..G5) under its right half, and the
+//            panel buttons' toggle in the corner
 //
 // The panel buttons (FX..GLO, HOME..REC) live in a popover over the rows,
 // from the screen's foot down to the toggle: shown while Shift is held over
@@ -32,7 +34,7 @@ class EngineView : public juce::Component,
                    public juce::TooltipClient
 {
 public:
-    static constexpr float kW = 480.0f, kH = 624.0f;
+    static constexpr float kW = 480.0f, kH = 628.0f;
 
     EngineView (FM1CeptionProcessor&, int slot);
     ~EngineView() override;
@@ -83,8 +85,9 @@ private:
     /** What a point in the design space is. */
     struct Hit
     {
-        enum Kind { none, strip, screen, menu, loadButton, knob, softKnob, button, key, toggle, popoverBack } kind = none;
-        int id = -1;   // knob: 0..7 (KNOB1-4, MASTER, SELECT, PRESETS, ALGO); softKnob: 0..3; button / key: matrix id
+        enum Kind { none, strip, screen, menu, loadButton, knob, softKnob, button, key, toggle, popoverBack,
+                    mute, solo, level } kind = none;
+        int id = -1;   // knob: 0..6 (KNOB1-4, SELECT, PRESETS, ALGO); softKnob: 0..3; button / key: matrix id
     };
 
     juce::Point<float> toDesign (juce::Point<float> p) const;
@@ -96,10 +99,13 @@ private:
     void releaseAll();
     void turn (int knob, int clicks);
     void setMaster (float v);
+    void setMasterAt (float designX);
     bool isBlank() const;
 
     int lcdRowAt (juce::Point<float> d) const;
     void paintStrip (juce::Graphics&);
+    void paintStripLevel (juce::Graphics&);
+    void paintStripButton (juce::Graphics&, juce::Rectangle<float>, const char* label, bool on, juce::Colour onColour, bool outlined);
     void paintScreen (juce::Graphics&);
     void paintSoftKnobs (juce::Graphics&);
     void paintRows (juce::Graphics&);
@@ -119,6 +125,11 @@ private:
     bool hasFirmware = false;
     juce::String firmware, stripLeft, stripRight;
     MiniLevel meter;
+    // the strip's level: its peak held a second, and what was last drawn (in quarter design px)
+    float holdDb = -120.0f;
+    juce::uint32 holdAt = 0;
+    int drawnLevel = -1, drawnHold = -1, drawnCaret = -1;
+    bool drawnMute = false, drawnSolo = false, drawnAudible = true;
     int softRow = -1, prefsRevision = -1;
     bool selectedMark = false;
 

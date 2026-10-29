@@ -5,8 +5,11 @@ namespace
 {
 const juce::Identifier kStateType { "FM1CEPTION" };
 const juce::Identifier kSlotType { "SLOT" };
+const juce::Identifier kPresetType { "FM1PRESET" };
 constexpr juce::uint32 kStateMagic = 0x43314d46; // "FM1C"
+constexpr juce::uint32 kPresetMagic = 0x50314d46; // "FM1P"
 constexpr int kStateVersion = 1;
+constexpr int kPresetVersion = 1;
 
 /** The length of a channel message from its status byte (0: not one). */
 int channelMessageLength (juce::uint8 status)
@@ -19,6 +22,24 @@ int channelMessageLength (juce::uint8 status)
     }
 }
 
+/** Boot a firmware with its flash and, if there is one, the machine saved with them (a plain boot
+    if it does not fit them). Flash that does not parse is dropped rather than losing the firmware
+    too: false then. */
+bool bootEngine (Fm1e* e, const juce::String& name, const juce::MemoryBlock& pkg,
+                 const juce::MemoryBlock& flash, const juce::MemoryBlock& machine)
+{
+    const auto* p = (const juce::uint8*) pkg.getData();
+    const auto* f = (const juce::uint8*) flash.getData();
+    const int r = machine.isEmpty()
+        ? fm1e_boot (e, name.toRawUTF8(), p, pkg.getSize(), f, flash.getSize())
+        : fm1e_boot_state (e, name.toRawUTF8(), p, pkg.getSize(), f, flash.getSize(),
+                           (const juce::uint8*) machine.getData(), machine.getSize());
+    if (r == 0)
+        return true;
+    fm1e_boot (e, name.toRawUTF8(), p, pkg.getSize(), nullptr, 0);
+    return false;
+}
+
 /** The main volume's gain is its value squared: 40 log10, as SHRUB's MASTER. */
 juce::String mainVolumeText (float v)
 {
@@ -27,6 +48,16 @@ juce::String mainVolumeText (float v)
     return juce::String (40.0f * std::log10 (v), 1) + " dB";
 }
 } // namespace
+
+/** The main output (engine 1's in multi-out), then a pair per further engine, off until the host
+    enables it. */
+juce::AudioProcessor::BusesProperties FM1CeptionProcessor::outputBuses()
+{
+    auto b = BusesProperties().withOutput ("Main", juce::AudioChannelSet::stereo(), true);
+    for (int i = 2; i <= kMaxEngines; ++i)
+        b = b.withOutput ("Engine " + juce::String (i), juce::AudioChannelSet::stereo(), false);
+    return b;
+}
 
 //==============================================================================
 juce::AudioProcessorValueTreeState::ParameterLayout FM1CeptionProcessor::buildParameterLayout()
@@ -49,7 +80,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout FM1CeptionProcessor::buildPa
 }
 
 FM1CeptionProcessor::FM1CeptionProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (outputBuses()),
       apvts (*this, nullptr, "PARAMS", buildParameterLayout())
 {
     mainVolume = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("main"));
@@ -88,21 +119,13 @@ void FM1CeptionProcessor::startEngine (Slot& s)
     fm1e_set_master (h->get(), s.master->get());
     fm1e_set_lead (h->get(), (juce::uint32) lead);
 
-    if (! s.parkedPackage.isEmpty())
-    {
-        const auto name = s.parkedName.toStdString();
-        const auto* pkg = (const juce::uint8*) s.parkedPackage.getData();
-        if (fm1e_boot (h->get(), name.c_str(), pkg, s.parkedPackage.getSize(),
-                       (const juce::uint8*) s.parkedFlash.getData(), s.parkedFlash.getSize()) != 0)
-        {
-            // flash that does not parse is dropped rather than losing the firmware too
-            fm1e_boot (h->get(), name.c_str(), pkg, s.parkedPackage.getSize(), nullptr, 0);
-            h->post ("The saved flash was unreadable: booted without it", 8000);
-        }
-    }
+    if (! s.parkedPackage.isEmpty()
+        && ! bootEngine (h->get(), s.parkedName, s.parkedPackage, s.parkedFlash, s.parkedMachine))
+        h->post ("The saved flash was unreadable: booted without it", 8000);
     s.parkedName.clear();
     s.parkedPackage.reset();
     s.parkedFlash.reset();
+    s.parkedMachine.reset();
 
     {
         const juce::ScopedLock el (engineLock);
@@ -124,6 +147,7 @@ void FM1CeptionProcessor::stopEngine (Slot& s)
 
     s.parkedName = s.handle->firmwareName();
     s.parkedPackage = s.handle->package();
+    s.parkedMachine = s.handle->saveState();
     s.parkedFlash = s.handle->flash();
 
     {
@@ -192,7 +216,13 @@ void FM1CeptionProcessor::runFileJob (int slot, const juce::File& file, bool exp
     });
 }
 
-void FM1CeptionProcessor::loadFile (int slot, const juce::File& file) { runFileJob (slot, file, false); }
+void FM1CeptionProcessor::loadFile (int slot, const juce::File& file)
+{
+    if (file.hasFileExtension (kPresetSuffix))
+        loadPreset (slot, file);
+    else
+        runFileJob (slot, file, false);
+}
 void FM1CeptionProcessor::exportFile (int slot, const juce::File& file) { runFileJob (slot, file, true); }
 
 juce::Result FM1CeptionProcessor::loadFileNow (int slot, const juce::File& file)
@@ -207,6 +237,95 @@ juce::Result FM1CeptionProcessor::loadFileNow (int slot, const juce::File& file)
     return juce::Result::ok();
 }
 
+juce::File FM1CeptionProcessor::presetsFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+        .getChildFile ("FM-1Ception").getChildFile ("Presets");
+}
+
+juce::Result FM1CeptionProcessor::savePreset (int slot, const juce::File& file)
+{
+    auto h = engine (slot);
+    auto fail = [&h] (const juce::String& why)
+    {
+        if (h != nullptr)
+            h->post ("Preset not saved: " + why, 8000);
+        return juce::Result::fail (why);
+    };
+    if (h == nullptr || ! h->hasFirmware())
+        return fail ("no firmware runs");
+    if (h->fileJob.load())
+        return fail ("still busy with the last file");
+
+    // (the machine first: the flash that goes with it comes with it)
+    const auto machine = h->saveState();
+    if (machine.isEmpty())
+        return fail ("the firmware has stopped");
+    juce::ValueTree preset (kPresetType);
+    preset.setProperty ("version", kPresetVersion, nullptr);
+    preset.setProperty ("name", h->firmwareName(), nullptr);
+    preset.setProperty ("clock", getClock (slot), nullptr);
+    preset.setProperty ("package", h->package(), nullptr);
+    preset.setProperty ("flash", h->flash(), nullptr);
+    preset.setProperty ("machine", machine, nullptr);
+
+    if (! file.getParentDirectory().createDirectory())
+        return fail ("cannot create " + file.getParentDirectory().getFullPathName());
+    juce::TemporaryFile tmp (file);
+    {
+        juce::FileOutputStream out (tmp.getFile());
+        if (! out.openedOk())
+            return fail (out.getStatus().getErrorMessage());
+        out.writeInt ((int) kPresetMagic);
+        preset.writeToStream (out);
+        out.flush();
+        if (out.getStatus().failed())
+            return fail (out.getStatus().getErrorMessage());
+    }
+    if (! tmp.overwriteTargetFileWithTemporary())
+        return fail ("cannot write " + file.getFullPathName());
+    h->post ("Saved preset " + file.getFileNameWithoutExtension());
+    return juce::Result::ok();
+}
+
+juce::Result FM1CeptionProcessor::loadPreset (int slot, const juce::File& file)
+{
+    auto h = engine (slot);
+    auto fail = [&h] (const juce::String& why)
+    {
+        if (h != nullptr)
+            h->post ("Preset not loaded: " + why, 8000);
+        return juce::Result::fail (why);
+    };
+    if (h == nullptr)
+        return fail ("that engine is switched off");
+    if (h->fileJob.load())
+        return fail ("still busy with the last file");
+
+    juce::FileInputStream in (file);
+    if (! in.openedOk())
+        return fail (in.getStatus().getErrorMessage());
+    if (in.getTotalLength() < 8 || (juce::uint32) in.readInt() != kPresetMagic)
+        return fail (file.getFileName() + " is not an FM-1Ception preset");
+    const auto preset = juce::ValueTree::readFromStream (in);
+    const auto* pkg = preset.getProperty ("package").getBinaryData();
+    if (! preset.hasType (kPresetType) || pkg == nullptr || pkg->isEmpty())
+        return fail (file.getFileName() + " is damaged");
+
+    juce::MemoryBlock flash, machine;
+    if (const auto* mb = preset.getProperty ("flash").getBinaryData())
+        flash = *mb;
+    if (const auto* mb = preset.getProperty ("machine").getBinaryData())
+        machine = *mb;
+
+    // (the machine runs at the clock it was saved at: the engine's has to be that one too)
+    setClock (slot, (int) preset.getProperty ("clock", (int) fm1e_default_mhz()));
+    if (! bootEngine (h->get(), preset.getProperty ("name").toString(), *pkg, flash, machine))
+        return fail ("its flash was unreadable: booted the firmware without it");
+    h->post ("Loaded preset " + file.getFileNameWithoutExtension());
+    return juce::Result::ok();
+}
+
 void FM1CeptionProcessor::initEngine (int slot)
 {
     if (auto h = engine (slot))
@@ -214,6 +333,74 @@ void FM1CeptionProcessor::initEngine (int slot)
         fm1e_unload (h->get());
         h->post ("Engine initialised");
     }
+}
+
+juce::Array<int> FM1CeptionProcessor::duplicateTargets (int slot) const
+{
+    juce::Array<int> out;
+    for (int i = 0; i < numEngines.load(); ++i)
+        if (i != slot)
+            if (auto h = engine (i); h != nullptr && h->hasFirmware())
+                out.add (i);
+    return out;
+}
+
+void FM1CeptionProcessor::duplicateToAll (int slot)
+{
+    auto src = engine (slot);
+    if (src == nullptr || ! src->hasFirmware())
+        return;
+    if (src->fileJob.exchange (true))
+    {
+        src->post ("Still busy with the last file");
+        return;
+    }
+
+    const int mhz = getClock (slot);
+    const float master = slots[(size_t) slot].master->get();
+    std::vector<std::shared_ptr<fm1c::EngineHandle>> targets;
+    for (int i = 0; i < numEngines.load(); ++i)
+    {
+        auto h = engine (i);
+        if (i == slot || h == nullptr || h->fileJob.load())
+            continue;
+        targets.push_back (h);
+        // (the engine's own clock follows at its boot, so it does not restart its old firmware first)
+        slots[(size_t) i].clockMhz = mhz;
+        auto& p = *slots[(size_t) i].master;
+        p.beginChangeGesture();
+        p.setValueNotifyingHost (p.convertTo0to1 (master));
+        p.endChangeGesture();
+    }
+    if (targets.empty())
+    {
+        src->fileJob = false;
+        return;
+    }
+
+    src->post ("Duplicating to " + juce::String ((int) targets.size()) + " engines...", 60000);
+    juce::Thread::launch ([src, targets, mhz, from = slot + 1]
+    {
+        // the whole machine, so the copies are where it is: the preset as edited, the same screen
+        const auto machine = src->saveState();
+        if (machine.isEmpty())
+        {
+            src->post ("Not duplicated: the firmware has stopped", 8000);
+            src->fileJob = false;
+            return;
+        }
+        const auto name = src->firmwareName();
+        const auto pkg = src->package();
+        const auto flash = src->flash();
+        for (const auto& h : targets)
+        {
+            fm1e_set_clock (h->get(), (juce::uint32) mhz);
+            const bool ok = bootEngine (h->get(), name, pkg, flash, machine);
+            h->post (ok ? "Duplicated from engine " + juce::String (from) : juce::String ("Not duplicated"), 8000);
+        }
+        src->post ("Duplicated to " + juce::String ((int) targets.size()) + " engines");
+        src->fileJob = false;
+    });
 }
 
 //==============================================================================
@@ -229,8 +416,6 @@ void FM1CeptionProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     maxBlock = juce::jmax (1, samplesPerBlock);
     setLeadFromBlockSize (sampleRate);
-    if (awake == nullptr)
-        awake = std::make_unique<juce::ScopedLowPowerModeDisabler>();
 
     {
         const juce::ScopedLock sl (slotsLock);
@@ -242,6 +427,10 @@ void FM1CeptionProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     mainGain.reset (sampleRate, 0.02);
     const float v = mainVolume->get();
     mainGain.setCurrentAndTargetValue (v * v);
+
+    // mute and solo fade over 5 ms
+    gainStep = (float) (1.0 / juce::jmax (1.0, 0.005 * sampleRate));
+    monoScratch.assign ((size_t) maxBlock, 0.0f);
 }
 
 bool FM1CeptionProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -250,7 +439,38 @@ bool FM1CeptionProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
         return false;
 
     const auto out = layouts.getMainOutputChannelSet();
-    return out == juce::AudioChannelSet::stereo() || out == juce::AudioChannelSet::mono();
+    if (out != juce::AudioChannelSet::stereo() && out != juce::AudioChannelSet::mono())
+        return false;
+    for (int i = 1; i < layouts.outputBuses.size(); ++i)
+        if (const auto& set = layouts.outputBuses.getReference (i);
+            ! set.isDisabled() && set != juce::AudioChannelSet::stereo())
+            return false;
+    return true;
+}
+
+bool FM1CeptionProcessor::isOutputEnabled (int bus) const
+{
+    const auto* b = getBus (false, bus);
+    return b != nullptr && b->isEnabled() && b->getNumberOfChannels() > 0;
+}
+
+bool FM1CeptionProcessor::isAudible (int slot) const
+{
+    bool anySolo = false;
+    for (int i = 0; i < numEngines.load(); ++i)
+        anySolo = anySolo || slots[(size_t) i].solo.load();
+    const auto& s = slots[(size_t) slot];
+    return ! s.mute.load() && (! anySolo || s.solo.load());
+}
+
+void FM1CeptionProcessor::soloExclusive (int slot)
+{
+    bool onlyThis = slots[(size_t) slot].solo.load();
+    for (int i = 0; i < kMaxEngines; ++i)
+        if (i != slot && slots[(size_t) i].solo.load())
+            onlyThis = false;
+    for (int i = 0; i < kMaxEngines; ++i)
+        slots[(size_t) i].solo = ! onlyThis && i == slot;
 }
 
 void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -262,14 +482,28 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     if (n <= 0 || buffer.getNumChannels() == 0)
         return;
 
-    auto* outL = buffer.getWritePointer (0);
-    auto* outR = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
-    // a mono output gets both channels into one
-    juce::HeapBlock<float> monoR;
-    if (outR == nullptr)
+    // each enabled output pair's channels (null: off); bus 0 is the main output
+    std::array<float*, kMaxEngines> busL {}, busR {};
+    for (int b = 0; b < juce::jmin (kMaxEngines, getBusCount (false)); ++b)
     {
-        monoR.calloc ((size_t) n);
-        outR = monoR.get();
+        const auto* bus = getBus (false, b);
+        const int nch = bus != nullptr && bus->isEnabled() ? bus->getNumberOfChannels() : 0;
+        const int c0 = nch > 0 ? getChannelIndexInProcessBlockBuffer (false, b, 0) : 0;
+        if (nch == 0 || c0 + nch > buffer.getNumChannels())
+            continue;
+        busL[(size_t) b] = buffer.getWritePointer (c0);
+        busR[(size_t) b] = nch > 1 ? buffer.getWritePointer (c0 + 1) : nullptr;
+    }
+    if (busL[0] == nullptr)
+        busL[0] = buffer.getWritePointer (0);
+    // a mono main output gets both channels into one
+    const bool monoMain = busR[0] == nullptr;
+    if (monoMain)
+    {
+        if ((int) monoScratch.size() < n)
+            monoScratch.resize ((size_t) n);
+        std::fill_n (monoScratch.begin(), n, 0.0f);
+        busR[0] = monoScratch.data();
     }
 
     {
@@ -278,6 +512,10 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         {
             const auto mode = getMidiMode();
             const int sel = getSelected();
+            const bool multi = multiOut.load();
+            bool anySolo = false;
+            for (const auto& s : slots)
+                anySolo = anySolo || (s.live != nullptr && s.solo.load());
             for (int si = 0; si < kMaxEngines; ++si)
             {
                 auto& s = slots[(size_t) si];
@@ -318,6 +556,12 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                     sendMidi (s, e, frame, status, len > 1 ? d[1] : 0, len > 2 ? d[2] : 0, (juce::uint8) len);
                 }
 
+                const int bus = multi && busL[(size_t) si] != nullptr ? si : 0;
+                auto* outL = busL[(size_t) bus];
+                auto* outR = busR[(size_t) bus];
+                const float target = ! s.mute.load() && (! anySolo || s.solo.load()) ? 1.0f : 0.0f;
+
+                // (the peaks are the engine's own, muted or not: its meter greys while unheard)
                 float spk[2] {};
                 juce::uint64 starved = 0;
                 for (int i = 0; i < n; ++i)
@@ -343,8 +587,10 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                     const auto t = (float) juce::jmin (s.frac, 1.0);
                     const float l = s.cur[0] + (s.next[0] - s.cur[0]) * t;
                     const float r = s.cur[1] + (s.next[1] - s.cur[1]) * t;
-                    outL[i] += l;
-                    outR[i] += r;
+                    if (! juce::exactlyEqual (s.gain, target))
+                        s.gain = target > s.gain ? juce::jmin (target, s.gain + gainStep) : juce::jmax (target, s.gain - gainStep);
+                    outL[i] += l * s.gain;
+                    outR[i] += r * s.gain;
                     spk[0] = juce::jmax (spk[0], std::abs (l));
                     spk[1] = juce::jmax (spk[1], std::abs (r));
                 }
@@ -359,18 +605,27 @@ void FM1CeptionProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     const float v = mainVolume->get();
     mainGain.setTargetValue (v * v);
+    // the main volume is every output pair's; the output meter shows the loudest of them
     float pk[2] {};
     for (int i = 0; i < n; ++i)
     {
         const float g = mainGain.getNextValue();
-        outL[i] *= g;
-        outR[i] *= g;
-        pk[0] = juce::jmax (pk[0], std::abs (outL[i]));
-        pk[1] = juce::jmax (pk[1], std::abs (outR[i]));
+        for (size_t b = 0; b < busL.size(); ++b)
+        {
+            if (busL[b] == nullptr)
+                continue;
+            busL[b][i] *= g;
+            pk[0] = juce::jmax (pk[0], std::abs (busL[b][i]));
+            if (busR[b] != nullptr)
+            {
+                busR[b][i] *= g;
+                pk[1] = juce::jmax (pk[1], std::abs (busR[b][i]));
+            }
+        }
     }
-    if (monoR != nullptr)
+    if (monoMain)
         for (int i = 0; i < n; ++i)
-            outL[i] = 0.5f * (outL[i] + outR[i]);
+            busL[0][i] = 0.5f * (busL[0][i] + busR[0][i]);
 
     for (int c = 0; c < 2; ++c)
         if (pk[c] > peak[c].load (std::memory_order_relaxed))
@@ -433,6 +688,7 @@ void FM1CeptionProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("midiMode", midiMode.load(), nullptr);
     state.setProperty ("selected", selected.load(), nullptr);
     state.setProperty ("viewLayout", viewLayout.load(), nullptr);
+    state.setProperty ("multiOut", multiOut.load(), nullptr);
     state.appendChild (apvts.copyState(), nullptr);
 
     {
@@ -445,14 +701,20 @@ void FM1CeptionProcessor::getStateInformation (juce::MemoryBlock& destData)
             slot.setProperty ("clock", s.clockMhz.load(), nullptr);
             slot.setProperty ("rx", s.rxChannel.load(), nullptr);
             slot.setProperty ("tx", s.txChannel.load(), nullptr);
+            slot.setProperty ("mute", s.mute.load(), nullptr);
+            slot.setProperty ("solo", s.solo.load(), nullptr);
 
             const auto name = s.handle != nullptr ? s.handle->firmwareName() : s.parkedName;
             const auto pkg = s.handle != nullptr ? s.handle->package() : s.parkedPackage;
             if (! pkg.isEmpty())
             {
+                // (the machine first: the flash that goes with it comes with it)
+                const auto machine = s.handle != nullptr ? s.handle->saveState() : s.parkedMachine;
                 slot.setProperty ("name", name, nullptr);
                 slot.setProperty ("package", pkg, nullptr);
                 slot.setProperty ("flash", s.handle != nullptr ? s.handle->flash() : s.parkedFlash, nullptr);
+                if (! machine.isEmpty())
+                    slot.setProperty ("machine", machine, nullptr);
             }
             state.appendChild (slot, nullptr);
         }
@@ -480,6 +742,7 @@ void FM1CeptionProcessor::setStateInformation (const void* data, int sizeInBytes
     setMidiMode ((MidiMode) (int) state.getProperty ("midiMode", (int) MidiMode::selected));
     setSelected ((int) state.getProperty ("selected", 0));
     viewLayout = juce::jlimit (0, 1, (int) state.getProperty ("viewLayout", (int) ViewLayout::tiled));
+    multiOut = (bool) state.getProperty ("multiOut", false);
 
     {
         const juce::ScopedLock sl (slotsLock);
@@ -494,13 +757,17 @@ void FM1CeptionProcessor::setStateInformation (const void* data, int sizeInBytes
             s.clockMhz = (int) slot.getProperty ("clock", (int) fm1e_default_mhz());
             s.rxChannel = juce::jlimit (0, 16, (int) slot.getProperty ("rx", 0));
             s.txChannel = juce::jlimit (0, 16, (int) slot.getProperty ("tx", 0));
+            s.mute = (bool) slot.getProperty ("mute", false);
+            s.solo = (bool) slot.getProperty ("solo", false);
 
             juce::String name;
-            juce::MemoryBlock pkg, flash;
+            juce::MemoryBlock pkg, flash, machine;
             if (const auto* mb = slot.getProperty ("package").getBinaryData())
                 pkg = *mb;
             if (const auto* mb = slot.getProperty ("flash").getBinaryData())
                 flash = *mb;
+            if (const auto* mb = slot.getProperty ("machine").getBinaryData())
+                machine = *mb;
             name = slot.getProperty ("name").toString();
 
             if (s.handle != nullptr)
@@ -509,15 +776,15 @@ void FM1CeptionProcessor::setStateInformation (const void* data, int sizeInBytes
                 fm1e_set_clock (e, (juce::uint32) s.clockMhz.load());
                 if (pkg.isEmpty())
                     fm1e_unload (e);
-                else if (fm1e_boot (e, name.toRawUTF8(), (const juce::uint8*) pkg.getData(), pkg.getSize(),
-                                    (const juce::uint8*) flash.getData(), flash.getSize()) != 0)
-                    fm1e_boot (e, name.toRawUTF8(), (const juce::uint8*) pkg.getData(), pkg.getSize(), nullptr, 0);
+                else
+                    bootEngine (e, name, pkg, flash, machine);
             }
             else
             {
                 s.parkedName = name;
                 s.parkedPackage = pkg;
                 s.parkedFlash = flash;
+                s.parkedMachine = machine;
             }
         }
     }

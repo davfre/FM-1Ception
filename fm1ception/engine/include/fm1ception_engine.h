@@ -5,8 +5,9 @@
 
     Threads:
       - fm1e_push_midi and fm1e_pop belong to the audio thread: one thread at a time per handle.
-      - fm1e_load_file and fm1e_export_file block until the engine answers: call them from a
-        background thread, never the message or audio thread.
+      - fm1e_load_file, fm1e_export_file and fm1e_capture_flash block until the engine answers: call them from a
+        background thread, never the message or audio thread. fm1e_save_state blocks too, for a few ms (it is
+        what a host's state save waits for).
       - everything else may be called from any thread.
 */
 #pragma once
@@ -51,6 +52,20 @@ int fm1e_boot (const Fm1e*, const char* name, const uint8_t* pkg, size_t pkgLen,
 void fm1e_unload (const Fm1e*);
 int fm1e_load_file (const Fm1e*, const char* utf8Path, char* msg, size_t msgCap);
 int fm1e_export_file (const Fm1e*, const char* utf8Path, char* msg, size_t msgCap);
+/* bring fm1e_flash's copy (refreshed every two seconds) up to the live flash now; blocks */
+int fm1e_capture_flash (const Fm1e*, char* msg, size_t msgCap);
+
+/* machine states: the whole emulated machine (cores, RAM, peripherals, screen) as it is now, a
+   diff against the firmware booted afresh with its flash (tens of KB). fm1e_save_state takes one
+   for fm1e_state and brings fm1e_flash's copy to the flash it goes with; fm1e_boot_state boots
+   a firmware and flash with it in place of the fresh machine (a plain boot if it does not fit),
+   and fm1e_restore_result says how that went, once: 0 restored, -1 booted afresh (msg: why),
+   1 nothing to report */
+int fm1e_save_state (const Fm1e*, char* msg, size_t msgCap);
+size_t fm1e_state (const Fm1e*, uint8_t* out, size_t cap);
+int fm1e_boot_state (const Fm1e*, const char* name, const uint8_t* pkg, size_t pkgLen,
+                     const uint8_t* flash, size_t flashLen, const uint8_t* state, size_t stateLen);
+int fm1e_restore_result (const Fm1e*, char* msg, size_t msgCap);
 
 /* copy out what fits, return the full length */
 size_t fm1e_name (const Fm1e*, uint8_t* out, size_t cap);

@@ -63,6 +63,16 @@ private:
         FM1CeptionEditor& owner;
     };
 
+    /** Tabbed, the window keeps the one engine's shape, so the cell fills it rather than sitting
+        between black bands. */
+    class Constrainer : public juce::ComponentBoundsConstrainer
+    {
+    public:
+        void checkBounds (juce::Rectangle<int>&, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limits,
+                          bool top, bool left, bool bottom, bool right) override;
+        bool keepTabShape = false;
+    };
+
     void timerCallback() override;
     void syncViews();
     void layoutCells();
@@ -71,9 +81,14 @@ private:
     bool tabbed() const { return proc.getViewLayout() == FM1CeptionProcessor::ViewLayout::tabbed; }
     juce::Point<int> naturalSize (int engines) const;
     float cellScale() const;
+    /** The tabbed window around its cell, and its height at a width with the cell filling it. */
+    static juce::Point<int> tabbedChrome();
+    static int tabbedHeightFor (int width);
+    void updateConstrainer();
 
     void showMainMenu();
     void showEngineMenu (int slot, int lcdRow);
+    void confirmDuplicate (int slot);
     juce::PopupMenu midiMenu();
     juce::String midiModeText() const;
     juce::String routeText (int slot) const;
@@ -81,6 +96,9 @@ private:
     juce::PopupMenu clockMenu (int slot);
     juce::String engineLabel (int slot) const;
     void chooseFile (int slot, bool exporting);
+    /** The presets folder's tree (subfolders as submenus), each loading into the slot. */
+    juce::PopupMenu presetsMenu (int slot, bool withFolderItem);
+    void savePresetAs (int slot);
 
     FM1CeptionProcessor& proc;
     juce::LookAndFeel_V4 lnf;
@@ -90,8 +108,9 @@ private:
     Tabs tabs { *this };
     juce::OwnedArray<fm1c::EngineView> views;
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::ScopedMessageBox confirmBox;
     juce::TooltipWindow tooltips { this, 700 };
-    juce::ComponentBoundsConstrainer constrainer;
+    Constrainer constrainer;
     int seenLayout = -1, seenEngines = -1, seenViewLayout = -1, seenSelected = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FM1CeptionEditor)

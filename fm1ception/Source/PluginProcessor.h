@@ -13,8 +13,13 @@
 // lead is a constant reported as the plugin's latency. processBlock only moves
 // MIDI in and frames out, resampling each engine to the host's rate.
 //
-// Switching a slot off joins its thread but keeps the firmware and the flash
-// it wrote, so switching it back on (or reopening the project) restores it.
+// Switching a slot off joins its thread but keeps the firmware, the flash it
+// wrote and the whole machine as it was, so switching it back on (or
+// reopening the project) picks up where it left off: the preset being edited,
+// the screen it was on.
+//
+// The engines sum into the main output, or in multi-out each plays out of an
+// output pair of its own (engine 1 the main one).
 //==============================================================================
 class FM1CeptionProcessor : public juce::AudioProcessor
 {
@@ -27,7 +32,7 @@ public:
     ~FM1CeptionProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override { awake.reset(); }
+    void releaseResources() override {}
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
@@ -59,13 +64,44 @@ public:
     /** Bumped whenever engines come or go, or a state is restored. */
     int layoutVersion() const noexcept { return layout.load(); }
 
-    /** Open a .fwsc or .fm1save into a slot, in the background. */
+    /** Open a .fwsc, .fm1save or preset into a slot (the first two in the background). */
     void loadFile (int slot, const juce::File& file);
     void exportFile (int slot, const juce::File& file);
     void initEngine (int slot);
 
     /** Load and wait: the smoke test's way in. */
     juce::Result loadFileNow (int slot, const juce::File& file);
+
+    /** A preset is one engine as it is: its firmware, flash, whole machine and clock, in a
+        .fm1ception file of its own (a project's state is every engine's, and its mix). Saving
+        blocks for a few ms; loading an engine boots it there. Either posts how it went. */
+    static constexpr const char* kPresetSuffix = ".fm1ception";
+    static juce::File presetsFolder();
+    juce::Result savePreset (int slot, const juce::File& file);
+    juce::Result loadPreset (int slot, const juce::File& file);
+
+    /** Every other running engine takes this one's firmware, live flash, clock and MASTER, in the
+        background. The engine numbers it will replace (those with a firmware) are listed by
+        duplicateTargets. */
+    void duplicateToAll (int slot);
+    juce::Array<int> duplicateTargets (int slot) const;
+
+    /** Mute and solo: an engine is heard unless muted, and while any engine is soloed only the
+        soloed ones are. */
+    bool isMuted (int slot) const { return slots[(size_t) slot].mute.load(); }
+    bool isSoloed (int slot) const { return slots[(size_t) slot].solo.load(); }
+    void setMuted (int slot, bool on) { slots[(size_t) slot].mute = on; }
+    void setSoloed (int slot, bool on) { slots[(size_t) slot].solo = on; }
+    /** Solo this engine alone (or, if it already is the only one, clear every solo). */
+    void soloExclusive (int slot);
+    bool isAudible (int slot) const;
+
+    /** Multi-out: engine N plays out of output pair N (1: the main output) rather than all into
+        the main one. An engine whose pair the host has not enabled stays in the main output. */
+    bool isMultiOut() const noexcept { return multiOut.load(); }
+    void setMultiOut (bool on) { multiOut = on; }
+    /** Is output pair `bus` (0: main) enabled in the host? */
+    bool isOutputEnabled (int bus) const;
 
     int getClock (int slot) const { return slots[(size_t) slot].clockMhz.load(); }
     void setClock (int slot, int mhz);
@@ -114,7 +150,7 @@ private:
         // message side, under slotsLock
         std::shared_ptr<fm1c::EngineHandle> handle;
         juce::String parkedName;
-        juce::MemoryBlock parkedPackage, parkedFlash;
+        juce::MemoryBlock parkedPackage, parkedFlash, parkedMachine;
 
         // audio side: swapped under engineLock
         Fm1e* live = nullptr;
@@ -128,10 +164,14 @@ private:
         std::array<bool, 16> sustain {};
 
         std::atomic<int> clockMhz { 240 }, rxChannel { 0 }, txChannel { 0 };
+        std::atomic<bool> mute { false }, solo { false };
         std::atomic<float> peak[2] { 0.0f, 0.0f };
         juce::AudioParameterFloat* master = nullptr;
+        // audio side: the mute / solo gain, ramped to avoid clicks
+        float gain = 1.0f;
     };
 
+    static BusesProperties outputBuses();
     juce::AudioProcessorValueTreeState::ParameterLayout buildParameterLayout();
     void startEngine (Slot&);
     void stopEngine (Slot&);
@@ -148,18 +188,15 @@ private:
     juce::CriticalSection engineLock;  // held briefly to swap what the audio thread sees
     std::atomic<int> numEngines { 1 }, layout { 0 };
     std::atomic<int> midiMode { (int) MidiMode::selected }, selected { 0 }, viewLayout { (int) ViewLayout::tiled };
+    std::atomic<bool> multiOut { false };
 
     double ratio = (double) FM1E_RATE / 44100.0;
     int lead = 2048;
     int maxBlock = 512;
+    float gainStep = 1.0f / 480.0f;
     juce::SmoothedValue<float> mainGain;
+    std::vector<float> monoScratch;
     std::atomic<float> peak[2] { 0.0f, 0.0f };
     std::atomic<int> editorW { 0 }, editorH { 0 };
-
-    // The engines run on threads of their own, not the host's audio thread, so
-    // macOS would App Nap them (timers coalesced, threads throttled to a fraction
-    // of real time) whenever it decides the host is idle.
-    std::unique_ptr<juce::ScopedLowPowerModeDisabler> awake;
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FM1CeptionProcessor)
 };

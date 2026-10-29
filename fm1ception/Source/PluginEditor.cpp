@@ -19,6 +19,40 @@ juce::File& lastFolder()
 }
 
 juce::String channelText (int ch) { return ch == 0 ? juce::String ("Omni") : "Ch " + juce::String (ch); }
+
+void revealPresets()
+{
+    const auto folder = FM1CeptionProcessor::presetsFolder();
+    folder.createDirectory();
+    folder.startAsProcess();
+}
+
+/** The presets in `dir` and the folders under it (a few deep) that have any. */
+void addPresets (juce::PopupMenu& m, const juce::File& dir, FM1CeptionProcessor* p, int slot, int depth)
+{
+    auto entries = dir.findChildFiles (juce::File::findFilesAndDirectories | juce::File::ignoreHiddenFiles, false);
+    std::sort (entries.begin(), entries.end(), [] (const juce::File& a, const juce::File& b)
+    {
+        if (a.isDirectory() != b.isDirectory())
+            return a.isDirectory();
+        return a.getFileName().compareNatural (b.getFileName()) < 0;
+    });
+    for (const auto& f : entries)
+    {
+        if (f.isDirectory())
+        {
+            juce::PopupMenu sub;
+            if (depth < 4)
+                addPresets (sub, f, p, slot, depth + 1);
+            if (sub.getNumItems() > 0)
+                m.addSubMenu (f.getFileName(), sub);
+        }
+        else if (f.hasFileExtension (FM1CeptionProcessor::kPresetSuffix))
+        {
+            m.addItem (f.getFileNameWithoutExtension(), [p, slot, f] { p->loadPreset (slot, f); });
+        }
+    }
+}
 } // namespace
 
 //==============================================================================
@@ -133,8 +167,11 @@ FM1CeptionEditor::FM1CeptionEditor (FM1CeptionProcessor& p)
 
     syncViews();
     const auto saved = proc.getEditorSize();
-    const auto size = saved.x > 0 && saved.y > 0 ? saved : naturalSize (proc.getNumEngines());
+    auto size = saved.x > 0 && saved.y > 0 ? saved : naturalSize (proc.getNumEngines());
+    if (tabbed())
+        size.y = tabbedHeightFor (size.x);
     setSize (size.x, size.y);
+    updateConstrainer();
 
     startTimerHz (30);
 }
@@ -155,9 +192,61 @@ float FM1CeptionEditor::cellScale() const
     return (float) views[0]->getWidth() / EngineView::kW;
 }
 
+juce::Point<int> FM1CeptionEditor::tabbedChrome()
+{
+    return { 2 * kPad, kHeaderH + kTabsH + 2 * kPad };
+}
+
+int FM1CeptionEditor::tabbedHeightFor (int width)
+{
+    const auto chrome = tabbedChrome();
+    return chrome.y + juce::roundToInt ((float) (width - chrome.x) * EngineView::kH / EngineView::kW);
+}
+
+void FM1CeptionEditor::Constrainer::checkBounds (juce::Rectangle<int>& b, const juce::Rectangle<int>& previous,
+                                                 const juce::Rectangle<int>& limits, bool top, bool left,
+                                                 bool bottom, bool right)
+{
+    // the ratio is for hosts that resize the window themselves: the shape here is exact
+    const auto ratio = getFixedAspectRatio();
+    setFixedAspectRatio (0.0);
+    if (keepTabShape)
+    {
+        if ((top || bottom) && ! (left || right))
+        {
+            const auto chrome = tabbedChrome();
+            b.setWidth (chrome.x + juce::roundToInt ((float) (b.getHeight() - chrome.y) * EngineView::kW / EngineView::kH));
+        }
+        else
+        {
+            b.setHeight (tabbedHeightFor (b.getWidth()));
+        }
+        if (left)
+            b.setX (previous.getRight() - b.getWidth());
+        if (top)
+            b.setY (previous.getBottom() - b.getHeight());
+    }
+    ComponentBoundsConstrainer::checkBounds (b, previous, limits, top, left, bottom, right);
+    if (keepTabShape)
+    {
+        // a width clamped to the minimum takes the height with it
+        b.setHeight (tabbedHeightFor (b.getWidth()));
+        if (top)
+            b.setY (previous.getBottom() - b.getHeight());
+    }
+    setFixedAspectRatio (ratio);
+}
+
+void FM1CeptionEditor::updateConstrainer()
+{
+    constrainer.keepTabShape = tabbed();
+    const int w = juce::jmax (kMinW, getWidth());
+    constrainer.setFixedAspectRatio (tabbed() ? (double) w / (double) tabbedHeightFor (w) : 0.0);
+}
+
 juce::Point<int> FM1CeptionEditor::naturalSize (int n) const
 {
-    const int cols = tabbed() ? 1 : juce::jmin (n, 4), rows = (n + cols - 1) / cols;
+    const int cols = tabbed() ? 1 : juce::jmin (n, 4), rows = tabbed() ? 1 : (n + cols - 1) / cols;
     const int chromeW = (cols + 1) * kPad;
     const int chromeH = kHeaderH + (tabbed() ? kTabsH : 0) + (rows + 1) * kPad;
 
@@ -167,13 +256,16 @@ juce::Point<int> FM1CeptionEditor::naturalSize (int n) const
     else if (const auto* primary = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         area = primary->userBounds.toNearestInt();
 
-    // the cells' current size, shrunk to fit the screen
+    // the cells' current size (tabbed: the one cell as wide as the window is), shrunk to fit the screen
+    const float current = tabbed() && getWidth() > 0 ? ((float) getWidth() - (float) chromeW) / EngineView::kW : cellScale();
     const float s = juce::jmax (kMinCellScale,
-                                juce::jmin (cellScale(),
+                                juce::jmin (current,
                                             ((float) area.getWidth() * 0.92f - (float) chromeW) / ((float) cols * EngineView::kW),
                                             ((float) area.getHeight() * 0.9f - (float) chromeH) / ((float) rows * EngineView::kH)));
-    return { juce::jmax (kMinW, chromeW + juce::roundToInt ((float) cols * EngineView::kW * s)),
-             chromeH + juce::roundToInt ((float) rows * EngineView::kH * s) };
+    const int w = juce::jmax (kMinW, chromeW + juce::roundToInt ((float) cols * EngineView::kW * s));
+    if (tabbed())
+        return { w, tabbedHeightFor (w) };
+    return { w, chromeH + juce::roundToInt ((float) rows * EngineView::kH * s) };
 }
 
 void FM1CeptionEditor::syncViews()
@@ -205,6 +297,7 @@ void FM1CeptionEditor::syncViews()
         const auto size = naturalSize (n);
         setSize (size.x, size.y);
     }
+    updateConstrainer();
     layoutCells();
     markSelection();
 }
@@ -294,6 +387,7 @@ void FM1CeptionEditor::resized()
     meter.setBounds (header.withSizeKeepingCentre (juce::jmin (header.getWidth(), 200), header.getHeight()));
 
     layoutCells();
+    updateConstrainer();
     proc.setEditorSize ({ getWidth(), getHeight() });
 }
 
@@ -532,6 +626,20 @@ void FM1CeptionEditor::showMainMenu()
     };
 
     perEngine ("Load Firmware", false, [] (FM1CeptionEditor& e, int i) { e.chooseFile (i, false); });
+    if (n == 1)
+    {
+        m.addSubMenu ("Presets", presetsMenu (0, true));
+    }
+    else
+    {
+        juce::PopupMenu presets;
+        for (int i = 0; i < n; ++i)
+            presets.addSubMenu (engineLabel (i), presetsMenu (i, false));
+        presets.addSeparator();
+        presets.addItem ("Open Presets Folder", [] { revealPresets(); });
+        m.addSubMenu ("Presets", presets);
+    }
+    perEngine ("Save Preset (Machine State)", true, [] (FM1CeptionEditor& e, int i) { e.savePresetAs (i); });
     perEngine ("Export Save", true, [] (FM1CeptionEditor& e, int i) { e.chooseFile (i, true); });
 
     if (anyLoaded)
@@ -564,6 +672,19 @@ void FM1CeptionEditor::showMainMenu()
     layout.addItem ("Tabbed  -  one engine at a time", true, tabbed(), [p = &proc] { p->setViewLayout (Layout::tabbed); });
     m.addSubMenu (juce::String ("Layout  (") + (tabbed() ? "Tabbed" : "Tiled") + ")", layout);
 
+    const bool multi = proc.isMultiOut();
+    juce::PopupMenu outputs;
+    outputs.addItem ("Stereo Mix  -  every engine in the main output", true, ! multi, [p = &proc] { p->setMultiOut (false); });
+    outputs.addItem ("Multi-Out  -  engine N plays out of output pair N", true, multi, [p = &proc] { p->setMultiOut (true); });
+    outputs.addSeparator();
+    juce::StringArray enabled;
+    for (int b = 0; b < FM1CeptionProcessor::kMaxEngines; ++b)
+        if (proc.isOutputEnabled (b))
+            enabled.add (juce::String (b + 1));
+    outputs.addItem ("Pairs the host has enabled: " + enabled.joinIntoString (" "), false, false, nullptr);
+    outputs.addItem ("An engine whose pair is off plays in the main output", false, false, nullptr);
+    m.addSubMenu (juce::String ("Outputs  (") + (multi ? "Multi-Out" : "Stereo Mix") + ")", outputs);
+
     m.addSeparator();
     m.addItem (juce::String ("FM-1Ception ") + JucePlugin_VersionString + "  -  fm1-emu " FM1C_EMU_VERSION,
                false, false, nullptr);
@@ -583,8 +704,12 @@ void FM1CeptionEditor::showEngineMenu (int slot, int lcdRow)
     juce::PopupMenu m;
     m.addSectionHeader (engineLabel (slot));
     m.addItem ("Load Firmware...", [safe, slot] { if (safe) safe->chooseFile (slot, false); });
+    m.addSubMenu ("Presets", presetsMenu (slot, true));
+    m.addItem ("Save Preset (Machine State)...", loaded, false, [safe, slot] { if (safe) safe->savePresetAs (slot); });
     m.addItem ("Export Save...", loaded, false, [safe, slot] { if (safe) safe->chooseFile (slot, true); });
     m.addItem ("Init Engine", loaded, false, [p = &proc, slot] { p->initEngine (slot); });
+    m.addItem ("Duplicate to All Engines", loaded && proc.getNumEngines() > 1, false,
+               [safe, slot] { if (safe) safe->confirmDuplicate (slot); });
 
     // soft knobs: where this firmware draws KNOB1..4 on its screen, kept per firmware
     const int soft = views[slot]->softKnobRow();
@@ -603,8 +728,82 @@ void FM1CeptionEditor::showEngineMenu (int slot, int lcdRow)
     m.addSubMenu ("MIDI Channel  (" + routeText (slot) + ")", channelMenu (slot),
                   proc.getMidiMode() != FM1CeptionProcessor::MidiMode::multiChannel);
     m.addSubMenu ("CPU Clock  (" + juce::String (proc.getClock (slot)) + " MHz)", clockMenu (slot));
+    if (proc.isMultiOut())
+        m.addItem (slot == 0 ? juce::String ("Output: Main")
+                   : proc.isOutputEnabled (slot) ? "Output: Engine " + juce::String (slot + 1)
+                                                 : "Output: Main  (enable the plug-in's Engine " + juce::String (slot + 1)
+                                                       + " output in the host)",
+                   false, false, nullptr);
 
     m.showMenuAsync (juce::PopupMenu::Options().withMousePosition());
+}
+
+void FM1CeptionEditor::confirmDuplicate (int slot)
+{
+    const auto targets = proc.duplicateTargets (slot);
+    if (targets.isEmpty())
+    {
+        proc.duplicateToAll (slot);
+        return;
+    }
+
+    juce::StringArray names;
+    for (int t : targets)
+        names.add (engineLabel (t));
+    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel (
+        juce::MessageBoxIconType::QuestionIcon, "Duplicate " + engineLabel (slot) + " to all engines?",
+        "This replaces the firmware, its saved settings, the CPU clock and the MASTER level of:\n\n"
+            + names.joinIntoString ("\n"),
+        "Duplicate", "Cancel", this);
+    juce::Component::SafePointer<FM1CeptionEditor> safe (this);
+    confirmBox = juce::AlertWindow::showScopedAsync (options, [safe, slot] (int result)
+    {
+        if (safe != nullptr && result == 1)
+            safe->proc.duplicateToAll (slot);
+    });
+}
+
+juce::PopupMenu FM1CeptionEditor::presetsMenu (int slot, bool withFolderItem)
+{
+    juce::PopupMenu m;
+    addPresets (m, FM1CeptionProcessor::presetsFolder(), &proc, slot, 0);
+    if (m.getNumItems() == 0)
+        m.addItem ("No presets yet: Save Preset adds one", false, false, nullptr);
+    if (withFolderItem)
+    {
+        m.addSeparator();
+        m.addItem ("Open Presets Folder", [] { revealPresets(); });
+    }
+    return m;
+}
+
+void FM1CeptionEditor::savePresetAs (int slot)
+{
+    juce::String name;
+    if (auto h = proc.engine (slot))
+        name = h->firmwareName();
+    const auto legal = juce::File::createLegalFileName (name.isEmpty() ? "FM-1" : name);
+    // a folder per firmware, so the Presets menu sorts them by it
+    const auto folder = FM1CeptionProcessor::presetsFolder().getChildFile (legal);
+    folder.createDirectory();
+
+    chooser = std::make_unique<juce::FileChooser> (
+        "Save engine " + juce::String (slot + 1) + " as a preset: its firmware and the whole machine as it is",
+        folder.getNonexistentChildFile (legal, FM1CeptionProcessor::kPresetSuffix, false),
+        juce::String ("*") + FM1CeptionProcessor::kPresetSuffix);
+
+    juce::Component::SafePointer<FM1CeptionEditor> safe (this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [safe, slot] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (safe == nullptr || file == juce::File())
+            return;
+        if (! file.hasFileExtension (FM1CeptionProcessor::kPresetSuffix))
+            file = file.withFileExtension (FM1CeptionProcessor::kPresetSuffix);
+        safe->proc.savePreset (slot, file);
+    });
 }
 
 void FM1CeptionEditor::chooseFile (int slot, bool exporting)
@@ -619,7 +818,7 @@ void FM1CeptionEditor::chooseFile (int slot, bool exporting)
     chooser = std::make_unique<juce::FileChooser> (
         exporting ? "Export engine " + juce::String (slot + 1) + " as a shared save"
                   : "Load a firmware into engine " + juce::String (slot + 1),
-        start, exporting ? "*.fm1save" : "*.fwsc;*.fm1save;*.json");
+        start, exporting ? "*.fm1save" : "*.fwsc;*.fm1save;*.json;*.fm1ception");
 
     const int flags = exporting
         ? juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles

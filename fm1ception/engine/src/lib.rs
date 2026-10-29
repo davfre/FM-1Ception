@@ -1,6 +1,7 @@
 //! FM-1Ception's engines. Each handle is one emulated FM-1 on a thread of its own: upstream's
 //! plug-in machine thread (third_party/fm1-emu/crates/fm1-plugin/src/engine.rs) and its .fm1save
-//! codec, compiled from the submodule unchanged, behind a C ABI (include/fm1ception_engine.h).
+//! codec, compiled from the submodule, behind a C ABI (include/fm1ception_engine.h). A project
+//! keeps each engine's whole machine (fm1-soc's save-states) besides its firmware and flash.
 //!
 //! Upstream reads its nih-plug parameter set from the machine thread; `Fm1Params` here is the part
 //! of it the thread touches, with the parameters as atomics the plug-in sets.
@@ -146,6 +147,10 @@ pub struct Fm1e {
     thread: Option<std::thread::JoinHandle<()>>,
     jit: bool,
     busy: AtomicBool,
+    /// the machine state fm1e_save_state took last
+    state: Mutex<Vec<u8>>,
+    /// how the last fm1e_boot_state went, until fm1e_restore_result reports it
+    restoring: Mutex<Option<mpsc::Receiver<Result<(), String>>>>,
     // the audio thread's ends of the rings
     midi: UnsafeCell<rtrb::Producer<Midi>>,
     audio: UnsafeCell<rtrb::Consumer<[f32; 2]>>,
@@ -192,6 +197,8 @@ fn spawn() -> Fm1e {
         thread: Some(thread),
         jit,
         busy: AtomicBool::new(false),
+        state: Mutex::new(Vec::new()),
+        restoring: Mutex::new(None),
         midi: UnsafeCell::new(midi_tx),
         audio: UnsafeCell::new(audio_rx),
     }
@@ -287,6 +294,29 @@ impl Fm1e {
         let _ = self.cmds.send(Cmd::Boot { pkg, sectors: raw });
     }
 
+    /// Boot with a saved machine in place of the fresh one (even if this firmware and flash run).
+    fn boot_state(&self, name: String, pkg: Arc<Vec<u8>>, sectors: Vec<Sector>, state: Vec<u8>) {
+        let mut running = self.running.lock().unwrap();
+        *self.params.firmware.lock().unwrap() = Firmware { name, pkg: pkg.clone() };
+        *self.params.flash.lock().unwrap() = sectors.clone();
+        let raw = sectors.iter().map(|s| (s.at, s.data.to_vec())).collect();
+        *running = (!pkg.is_empty()).then(|| (pkg.clone(), sectors));
+        let (tx, rx) = mpsc::channel();
+        *self.restoring.lock().unwrap() = Some(rx);
+        let _ = self.cmds.send(Cmd::Restore { pkg, sectors: raw, state: Arc::new(state), reply: tx });
+    }
+
+    /// The whole machine now, and the flash it goes with (which fm1e_flash gives from then on).
+    fn save_state(&self) -> Result<String, String> {
+        let (tx, rx) = mpsc::channel();
+        self.cmds.send(Cmd::SaveState { reply: tx }).map_err(|_| "the engine stopped".to_owned())?;
+        let (_, state) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "the engine did not answer".to_owned())??;
+        *self.state.lock().unwrap() = state;
+        Ok(String::new())
+    }
+
     fn load(&self, path: &std::path::Path) -> Result<String, String> {
         let current = self.params.firmware.lock().unwrap().clone();
         let data = savefile::read_with_firmware(path, Some(&current))?;
@@ -301,10 +331,9 @@ impl Fm1e {
         Ok(format!("Loaded {}", firmware.name))
     }
 
-    fn export(&self, mut path: std::path::PathBuf) -> Result<String, String> {
-        if path.extension().is_none() {
-            path.set_extension("fm1save");
-        }
+    /// The live flash, once a save in progress has settled (the copy fm1e_flash gives is refreshed
+    /// from it every two seconds; this refreshes it now).
+    fn capture(&self) -> Result<(Firmware, Vec<Sector>), String> {
         let firmware = self.params.firmware.lock().unwrap().clone();
         if firmware.pkg.is_empty() {
             return Err("load a firmware first".into());
@@ -313,7 +342,15 @@ impl Fm1e {
         self.cmds
             .send(Cmd::Snapshot { pkg: firmware.pkg.clone(), reply: tx })
             .map_err(|_| "the engine stopped".to_owned())?;
-        let sectors = rx.recv().map_err(|_| "the engine stopped while exporting".to_owned())??;
+        let sectors = rx.recv().map_err(|_| "the engine stopped while saving".to_owned())??;
+        Ok((firmware, sectors))
+    }
+
+    fn export(&self, mut path: std::path::PathBuf) -> Result<String, String> {
+        if path.extension().is_none() {
+            path.set_extension("fm1save");
+        }
+        let (firmware, sectors) = self.capture()?;
         savefile::write(&path, &savefile::SaveData { firmware, sectors })?;
         Ok(format!("Exported {}", path.file_name().unwrap_or_default().to_string_lossy()))
     }
@@ -445,6 +482,93 @@ pub unsafe extern "C" fn fm1e_export_file(e: *const Fm1e, path: *const c_char, m
     let ok = result.is_ok();
     message(&result.unwrap_or_else(|x| x), msg, cap);
     if ok { 0 } else { -1 }
+}
+
+/// Bring fm1e_flash's copy up to the live flash, waiting for a save in progress to settle (up to
+/// 5 s). Blocks, as fm1e_load_file. Returns 0, or -1 (msg: why not).
+///
+/// # Safety
+/// `e` a live handle; `msg` writable for `cap` bytes (or null).
+#[no_mangle]
+pub unsafe extern "C" fn fm1e_capture_flash(e: *const Fm1e, msg: *mut c_char, cap: usize) -> i32 {
+    let e = &*e;
+    let result = e.exclusive(|| {
+        let (firmware, sectors) = e.capture()?;
+        if *e.params.firmware.lock().unwrap().pkg == *firmware.pkg {
+            *e.params.flash.lock().unwrap() = sectors;
+        }
+        Ok(String::new())
+    });
+    let ok = result.is_ok();
+    message(&result.unwrap_or_else(|x| x), msg, cap);
+    if ok { 0 } else { -1 }
+}
+
+/// Take the whole machine as it is now, for fm1e_state, and bring fm1e_flash's copy up to the flash
+/// it goes with. Blocks (a few ms; up to 5 s), as fm1e_load_file. Returns 0, or -1 (msg: why not:
+/// no firmware runs, or it has stopped).
+///
+/// # Safety
+/// `e` a live handle; `msg` writable for `cap` bytes (or null).
+#[no_mangle]
+pub unsafe extern "C" fn fm1e_save_state(e: *const Fm1e, msg: *mut c_char, cap: usize) -> i32 {
+    let e = &*e;
+    let result = e.exclusive(|| e.save_state());
+    let ok = result.is_ok();
+    message(&result.unwrap_or_else(|x| x), msg, cap);
+    if ok { 0 } else { -1 }
+}
+
+/// The machine state fm1e_save_state took last; returns its length (0: none).
+///
+/// # Safety
+/// `e` a live handle; `out` writable for `cap` bytes (or null).
+#[no_mangle]
+pub unsafe extern "C" fn fm1e_state(e: *const Fm1e, out: *mut u8, cap: usize) -> usize {
+    copy_out(&(&*e).state.lock().unwrap(), out, cap)
+}
+
+/// fm1e_boot, with a machine state from fm1e_state put in place of the fresh boot. If the state
+/// does not fit the package and flash (or is damaged), they boot as fm1e_boot would; how it went
+/// comes from fm1e_restore_result. Returns 0, or -1 if the flash blob is malformed (nothing booted).
+///
+/// # Safety
+/// As fm1e_boot; `state` valid for `state_len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fm1e_boot_state(e: *const Fm1e, name: *const c_char, pkg: *const u8, pkg_len: usize,
+                                         flash: *const u8, flash_len: usize, state: *const u8, state_len: usize) -> i32 {
+    let e = &*e;
+    let blob = if flash.is_null() { &[][..] } else { std::slice::from_raw_parts(flash, flash_len) };
+    let Some(sectors) = sectors_from_blob(blob) else { return -1 };
+    let pkg = if pkg.is_null() { Vec::new() } else { std::slice::from_raw_parts(pkg, pkg_len).to_vec() };
+    let name = if name.is_null() { String::new() } else { CStr::from_ptr(name).to_string_lossy().into_owned() };
+    let state = if state.is_null() { Vec::new() } else { std::slice::from_raw_parts(state, state_len).to_vec() };
+    e.boot_state(name, Arc::new(pkg), sectors, state);
+    0
+}
+
+/// How the last fm1e_boot_state went, once: 0 the machine came back, -1 it booted afresh instead
+/// (msg: why), 1 nothing (yet) to report.
+///
+/// # Safety
+/// `e` a live handle; `msg` writable for `cap` bytes (or null).
+#[no_mangle]
+pub unsafe extern "C" fn fm1e_restore_result(e: *const Fm1e, msg: *mut c_char, cap: usize) -> i32 {
+    let mut restoring = (&*e).restoring.lock().unwrap();
+    let Some(rx) = restoring.as_ref() else { return 1 };
+    let result = match rx.try_recv() {
+        Ok(r) => r,
+        Err(mpsc::TryRecvError::Empty) => return 1,
+        Err(mpsc::TryRecvError::Disconnected) => Err("the engine stopped".into()),
+    };
+    *restoring = None;
+    match result {
+        Ok(()) => 0,
+        Err(why) => {
+            message(&why, msg, cap);
+            -1
+        }
+    }
 }
 
 /// The firmware's name (UTF-8, not terminated); returns its length.

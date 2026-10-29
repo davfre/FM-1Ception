@@ -56,6 +56,17 @@ public:
         return mb;
     }
 
+    /** The whole machine as it is now, which flash() goes with from then on (empty: no firmware
+        runs, or it has stopped). Blocks for a few ms. */
+    juce::MemoryBlock saveState() const
+    {
+        if (fm1e_save_state (e, nullptr, 0) != 0)
+            return {};
+        juce::MemoryBlock mb (fm1e_state (e, nullptr, 0));
+        fm1e_state (e, (juce::uint8*) mb.getData(), mb.getSize());
+        return mb;
+    }
+
     bool hasFirmware() const { return fm1e_package (e, nullptr, 0) > 0; }
 
     std::atomic<bool> fileJob { false };
