@@ -21,6 +21,7 @@
 //! bit 0 in `RST_SRC` (0 at power-on, as before).
 
 #[derive(Clone)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct P33 {
     con: u32,
     dat: u32,
@@ -29,6 +30,7 @@ pub struct P33 {
     cmd: u8,
     addr: u16,
     /// main domain at 0..0x400, RTC domain (CON bit 8) at 0x400..0x800
+    #[cfg_attr(feature = "state", serde(with = "crate::state::boxed_arr"))]
     regs: Box<[u8; 0x800]>,
     /// register writes that changed a value (`snap`)
     changed: u64,
@@ -38,6 +40,7 @@ pub struct P33 {
 
 /// A register write the chip acts on (the Soc takes it after each access).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub enum Event {
     /// `WDT_CON` written: with `fed`, its count cleared.
     Wdt { fed: bool },

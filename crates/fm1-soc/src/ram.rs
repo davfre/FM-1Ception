@@ -1,5 +1,6 @@
 //! Plain little-endian RAM region at address 0.
 
+#[derive(Default)]
 pub struct Ram {
     data: Vec<u8>,
     /// Per 4-byte word: holds code the CPU has built blocks from (`mark_code`). The wasm JIT's
@@ -50,6 +51,17 @@ impl Ram {
 
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    /// The bytes, as a save-state keeps them.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// RAM holding `data`, with no code marked in it (a save-state's, restored: the cores
+    /// mark their code again as they build their blocks).
+    pub fn from_bytes(data: Vec<u8>) -> Self {
+        Self { code: vec![0; data.len() / 4 + 1], data, code_writes: 0 }
     }
 
     /// Host pointer to the bytes (the JIT's inline loads and stores).

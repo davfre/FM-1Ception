@@ -21,7 +21,9 @@
 pub const SPI0_BASE: u32 = 0x11c00;
 pub const FLASH_SIZE: usize = 1 << 20;
 
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpiFlash {
+    #[cfg_attr(feature = "state", serde(skip))]
     pub mem: Vec<u8>,
     pub con: u32,
     pub buf: u32,
@@ -33,6 +35,7 @@ pub struct SpiFlash {
     /// bytes in the current command (after the opcode), for address assembly
     pending_prog: Vec<u8>,
     /// FM1_FLASH_TRACE: log each command on CS release
+    #[cfg_attr(feature = "state", serde(skip))]
     trace: bool,
     /// JEDEC / unique-id reads
     pub jedec: [u8; 3],
@@ -44,6 +47,7 @@ pub struct SpiFlash {
     /// Erases and page programs so far (the power-cut points)
     pub ops: u32,
     /// FM1_FLASH_CUT: the op that is cut half way; none reach the chip after it
+    #[cfg_attr(feature = "state", serde(skip))]
     pub cut_at: Option<u32>,
 }
 
@@ -75,6 +79,14 @@ impl SpiFlash {
     }
 
     pub fn busy(&self) -> bool { self.cs_low }
+
+    /// The debugging switches (FM1_FLASH_TRACE, FM1_FLASH_CUT) of another chip's model, as
+    /// the environment set them there (a restored save-state's chip takes this process's).
+    #[cfg(feature = "state")]
+    pub(crate) fn debug_from(&mut self, other: &SpiFlash) {
+        self.trace = other.trace;
+        self.cut_at = other.cut_at;
+    }
 
     pub fn set_cs(&mut self, low: bool) {
         if !low && self.cs_low && self.trace && self.nbytes > 0 {

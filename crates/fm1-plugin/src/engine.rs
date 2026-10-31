@@ -20,6 +20,11 @@ const RAM_SIZE: usize = 1 << 20;
 pub const RATE: f64 = 44_100.0;
 /// Flash sectors, for saving what the firmware wrote (its patches) with the host's project.
 const SECTOR: usize = 4096;
+/// The host's MIDI reaches the jack's UART 16 times as fast as the jack's 31250 baud: a chord
+/// lands in one audio block (128 frames) rather than one note a ms, and a stream of
+/// controllers does not hold the notes back. Faster still could overrun the firmware's
+/// 256-byte receive ring between the blocks it reads it in.
+const MIDI_SPEED: u64 = 16;
 
 /// A MIDI message for the machine, with the frame (of its 44.1 kHz output) it is due at.
 #[derive(Clone, Copy, Default)]
@@ -37,6 +42,11 @@ pub enum Cmd {
     Load { firmware: crate::Firmware, sectors: Vec<crate::Sector>, reply: mpsc::Sender<Result<(), String>> },
     /// Capture live flash, rather than the host-state copy refreshed every two seconds.
     Snapshot { pkg: Arc<Vec<u8>>, reply: mpsc::Sender<Result<Vec<crate::Sector>, String>> },
+    /// The whole machine as it is now (fm1_soc::state), with the flash it was saved against.
+    SaveState { reply: mpsc::Sender<Result<(Vec<crate::Sector>, Vec<u8>), String>> },
+    /// Boot a package with a saved machine in place of the fresh one: its flash as `Boot`'s, and
+    /// a plain boot of them if the state does not fit (the reply says which).
+    Restore { pkg: Arc<Vec<u8>>, sectors: Vec<(u32, Vec<u8>)>, state: Arc<Vec<u8>>, reply: mpsc::Sender<Result<(), String>> },
     Key { id: u8, down: bool },
     Enc { enc: u8, clicks: i32 },
     /// SMK-37: an analog input (fm1_soc::smk's ANALOG_*), the next keys' velocity (µs)
@@ -91,6 +101,7 @@ impl Machine {
         let mut soc = Soc::new(RAM_SIZE, st.xip);
         soc.periph.hz = mhz * 1_000_000;
         soc.periph.skip_idle = true;
+        soc.periph.midi_speed = MIDI_SPEED;
         let mut cpu = Cpu::new(st.entry);
         cpu.jit_on = true;
         cpu.user = true; // the SPL hands cpu0 over in user mode (fm1-core's Cpu::user)
@@ -109,6 +120,27 @@ impl Machine {
         if machine::run_dual(cpu1, soc, n, RAM_SIZE, jit, |soc, k| machine::run_blocks(cpu, soc, k, pending_tick)).is_err() {
             self.halted = true;
         }
+    }
+
+    /// The machine as a save-state against a fresh boot of the package with the flash written so
+    /// far (which goes with it).
+    fn save_state(&self, pkg: &[u8]) -> Result<(Sectors, Vec<u8>), String> {
+        if self.halted {
+            return Err("the firmware has stopped".into());
+        }
+        let sectors = self.changed_sectors();
+        let fresh = Machine::boot(pkg, &sectors, self.soc.periph.hz / 1_000_000)?;
+        let state = fm1_soc::state::save(&self.cpu, self.cpu1.as_ref(), &self.soc, self.pending_tick, &fresh.soc)?;
+        Ok((sectors, state))
+    }
+
+    /// The machine a save-state was taken of, from the package and flash it was saved with.
+    fn restore(pkg: &[u8], sectors: &[(u32, Vec<u8>)], state: &[u8]) -> Result<Self, String> {
+        let hz = fm1_soc::state::clock_hz(state).ok_or("not a machine state")?;
+        let fresh = Machine::boot(pkg, sectors, hz / 1_000_000)?;
+        let mut m = fm1_soc::state::restore(state, fresh.soc)?;
+        m.soc.periph.midi_speed = MIDI_SPEED;
+        Ok(Machine { cpu: m.cpu, cpu1: m.cpu1, soc: m.soc, pending_tick: m.pending_tick, halted: false, flash0: fresh.flash0 })
     }
 
     fn changed_sectors(&self) -> Sectors {
@@ -211,6 +243,11 @@ pub fn run(
                         Err(error) => { let _ = reply.send(Err(error)); continue; }
                     }
                 }
+                Cmd::Restore { pkg, sectors, state, reply } => {
+                    let restored = Machine::restore(&pkg, &sectors, &state);
+                    let _ = reply.send(restored.as_ref().map(|_| ()).map_err(Clone::clone));
+                    (Cmd::Boot { pkg, sectors }, restored.ok(), None)
+                }
                 other => (other, None, None),
             };
             match c {
@@ -247,7 +284,19 @@ pub fn run(
                         }
                     } else { let _ = reply.send(Err("firmware changed before export; try again".into())); }
                 }
-                Cmd::Load { .. } => unreachable!(), // normalized above, after validation
+                Cmd::SaveState { reply } => {
+                    let saved_now = match (&m, &active_pkg) {
+                        (Some(machine), Some(pkg)) => machine.save_state(pkg),
+                        _ => Err("no firmware is running".into()),
+                    };
+                    if let Ok((sectors, _)) = &saved_now {
+                        // (the project's flash goes with the state: they belong to one moment)
+                        *params.flash.lock().unwrap() = project_sectors(sectors);
+                        saved = sectors.clone();
+                    }
+                    let _ = reply.send(saved_now.map(|(sectors, state)| (project_sectors(&sectors), state)));
+                }
+                Cmd::Load { .. } | Cmd::Restore { .. } => unreachable!(), // normalized above
                 Cmd::Key { id, down } => apply(&mut m, Action::Key { id, down }),
                 Cmd::Enc { enc, clicks } => apply(&mut m, Action::Enc { enc, clicks }),
                 Cmd::Analog { idx, value } => apply(&mut m, Action::Adc { ch: idx, value: value.min(1023) }),
@@ -427,6 +476,52 @@ mod portable_tests {
         assert_eq!(params.flash.lock().unwrap()[0].data[0], 0x12);
         assert!(pending.is_empty());
     }
+    /// A machine saved mid-session and restored runs on as the one it was saved from: the same
+    /// audio, sample for sample, and the same state, for as long as they run. (Emulation is
+    /// deterministic, compiled or not: a part of the machine a state left out would show here.)
+    /// FM1C_TEST_FIRMWARE=path/to.fwsc cargo test --release restored -- --nocapture
+    #[test]
+    fn a_restored_machine_runs_on_as_the_one_saved() {
+        let Some(path) = std::env::var_os("FM1C_TEST_FIRMWARE") else { return eprintln!("(set FM1C_TEST_FIRMWARE)") };
+        let pkg = std::fs::read(path).unwrap();
+        fn play(m: &mut Machine, to_ms: u64, audio: &mut Vec<i16>) {
+            while m.soc.periph.ms() < to_ms {
+                m.run(20_000);
+                audio.append(&mut m.soc.periph.audio);
+            }
+        }
+        let midi = |m: &mut Machine, bytes: &[u8]| bytes.iter().for_each(|&b| m.soc.periph.apply(&Action::Midi { b }));
+
+        // a session: another preset, knobs turned, a chord still sounding when it is saved
+        let (mut a, mut heard) = (Machine::boot(&pkg, &[], 240).unwrap(), Vec::new());
+        play(&mut a, 3000, &mut heard);
+        a.soc.periph.apply(&Action::Enc { enc: 6, clicks: 2 });
+        a.soc.periph.apply(&Action::Enc { enc: 2, clicks: -9 });
+        play(&mut a, 3500, &mut heard);
+        midi(&mut a, &[0x90, 60, 110, 0x90, 64, 100]);
+        play(&mut a, 4200, &mut heard);
+        let t = std::time::Instant::now();
+        let (sectors, state) = a.save_state(&pkg).unwrap();
+        let saved_in = t.elapsed();
+        let t = std::time::Instant::now();
+        let mut b = Machine::restore(&pkg, &sectors, &state).unwrap();
+        eprintln!("state {} bytes, saved in {saved_in:?}, restored in {:?}", state.len(), t.elapsed());
+        assert_eq!(b.save_state(&pkg).unwrap().1, state, "it saves as the same state again");
+
+        let (mut ha, mut hb) = (Vec::new(), Vec::new());
+        play(&mut a, 5000, &mut ha);
+        play(&mut b, 5000, &mut hb);
+        midi(&mut a, &[0x80, 60, 0, 0x80, 64, 0]);
+        midi(&mut b, &[0x80, 60, 0, 0x80, 64, 0]);
+        play(&mut a, 7000, &mut ha);
+        play(&mut b, 7000, &mut hb);
+        assert!(ha.iter().any(|&s| s != 0), "the chord sounds on");
+        assert!(ha == hb, "the same audio ({} samples, first difference at {:?})", ha.len(),
+                ha.iter().zip(&hb).position(|(x, y)| x != y));
+        assert!(a.save_state(&pkg).unwrap().1 == b.save_state(&pkg).unwrap().1, "the same machine");
+        assert!(Machine::restore(&pkg, &[(0xff000, vec![0; 4096])], &state).is_err(), "not against other flash");
+    }
+
     #[test]
     fn an_unfinished_flash_command_times_out_without_exporting() {
         let m = machine();

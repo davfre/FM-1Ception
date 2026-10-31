@@ -5,5 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# save-states: a core's state as a serde value (`CoreState`)
+state = ["dep:serde"]
+
 [dependencies]
 fm1-isa = { path = "../fm1-isa" }
+serde = { version = "1", features = ["derive"], optional = true }

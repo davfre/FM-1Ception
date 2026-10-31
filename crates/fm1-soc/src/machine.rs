@@ -186,6 +186,7 @@ impl Bus for Core1Loads<'_> {
 /// they skip (an instruction compiled code would have run is worth 1/16 of a step, an
 /// interpreted one 1/4) and slowly with time (1/2048 a cycle), so loops that show up later
 /// are still found.
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct LoopSkip {
     /// FM1_NO_LOOPSKIP: off (for A/B runs; the result is the same)
     pub enabled: bool,
@@ -200,8 +201,11 @@ pub struct LoopSkip {
     pub probes: u64,
     pub hits: u64,
     // (buffers kept between probes)
+    #[cfg_attr(feature = "state", serde(skip))]
     log: Vec<(u32, u32)>,
+    #[cfg_attr(feature = "state", serde(skip))]
     seen: Vec<Visit>,
+    #[cfg_attr(feature = "state", serde(skip))]
     scratch: Vec<(u32, u32)>,
 }
 

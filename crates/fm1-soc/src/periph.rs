@@ -87,6 +87,7 @@ const MIDI_QUEUE_MAX: usize = 3125;
 
 /// UART1's receive side (see the module notes).
 #[derive(Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Uart {
     con0: u32,
     rxsadr: u32,
@@ -118,6 +119,7 @@ const TMR_DIV: [u64; 16] = [1, 4, 16, 64, 2, 8, 32, 128, 256, 1024, 4096, 16384,
 /// counts from), PRD (the count that raises the interrupt and restarts). The stock firmware
 /// runs its usr_timer engine (the 2 ms ADC scan, key scan) on TIMER1.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Tmr {
     con: u32,
     prd: u32,
@@ -152,6 +154,7 @@ const ENC: [[u8; 4]; 7] = [
 /// Quadrature states in turning order: (A, B).
 const GRAY: [(u8, u8); 4] = [(0, 0), (1, 0), (1, 1), (0, 1)];
 
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct Periph {
     pub cycles: u64,
     /// Emulated CPU clock (cycles per second of firmware time).
@@ -235,6 +238,11 @@ pub struct Periph {
     uart: Uart,
     /// The UART's interrupt condition (enabled and pending), kept for `any_pending`.
     uart_irq: bool,
+    /// How many times the jack's 31250 baud MIDI bytes arrive at (0 or 1: the jack's own). A
+    /// host's chord at the jack's rate takes 320 us a byte, longer than an audio block. The
+    /// runner's setting, not the chip's: not in a save-state.
+    #[cfg_attr(feature = "state", serde(skip))]
+    pub midi_speed: u64,
     // key matrix
     sr_shift: u16,
     sr_latched: u16,
@@ -242,14 +250,17 @@ pub struct Periph {
     ph_out: u32,
     /// Front-panel LEDs: cycles each key/button LED has been lit, and the
     /// cycle of the last change of the LED lines or the column latch.
+    #[cfg_attr(feature = "state", serde(with = "crate::state::arr"))]
     led_acc: [u64; 41],
     /// The LED state (lines, latched column) credited last and the time pending for it.
     led_key: (u32, u16),
     led_pend: u64,
     led_last: u64,
     led_since: u64,
+    #[cfg_attr(feature = "state", serde(with = "crate::state::arr"))]
     pub keys_down: [bool; 41],
     /// The keys' force (the module notes): a ramp from `from` to `to` over `dur` cycles from `t0`
+    #[cfg_attr(feature = "state", serde(with = "crate::state::arr"))]
     key_force: [Ramp; 41],
     /// FM-1: the velocity of the next presses (Action::KeyVel; 1..127)
     pub key_vel: u8,
@@ -274,6 +285,7 @@ pub struct Periph {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub enum Action {
     Key { id: u8, down: bool },
     /// Turn encoder `enc` by `clicks` detents (+ = clockwise).
@@ -292,6 +304,7 @@ pub enum Action {
 
 /// A key's force: from `from` to `to` (0..1) over `dur` cycles from cycle `t0`.
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Ramp {
     from: f32,
     to: f32,
@@ -379,6 +392,7 @@ impl Default for Periph {
             tmr: [Tmr { next: u64::MAX, ..Default::default() }; 4],
             uart: Uart { next: u64::MAX, ot_next: u64::MAX, ..Default::default() },
             uart_irq: false,
+            midi_speed: 1,
             sr_shift: 0xffff,
             sr_latched: 0xffff,
             pa_out: 0,
@@ -611,6 +625,7 @@ impl Periph {
             usb_next: old.usb_next,
             usb_period: old.usb_period,
             uart,
+            midi_speed: old.midi_speed,
             sr_shift: old.sr_shift,
             sr_latched: old.sr_latched,
             led_acc: old.led_acc,
@@ -687,7 +702,7 @@ impl Periph {
     // ---- UART1 (MIDI IN) ------------------------------------------------------
 
     fn midi_byte_time(&self) -> u64 {
-        (self.hz * MIDI_BYTE_BITS / MIDI_BAUD).max(1)
+        (self.hz * MIDI_BYTE_BITS / (MIDI_BAUD * self.midi_speed.max(1))).max(1)
     }
 
     /// The next queued byte has arrived: where the RX DMA writes it (None: dropped).
@@ -1511,5 +1526,27 @@ mod tests {
         p.apply(&Action::Midi { b: 0xf8 });
         run_to(&mut p, 7 * byte + ms, &mut got);
         assert_eq!((got.len(), p.midi_dropped()), (5, 1));
+    }
+
+    #[test]
+    fn a_chord_arrives_within_an_audio_block_at_the_plug_ins_midi_speed() {
+        let chord = [0x90, 60, 110, 0x90, 64, 110, 0x90, 67, 110, 0x90, 72, 110];
+        let block = |speed: u64| {
+            let mut p = Periph::default();
+            p.midi_speed = speed;
+            p.write(0x1211c, 0x1000);
+            p.write(0x12120, 0x1100);
+            p.write(0x12124, 0x100);
+            p.write(0x12100, 0x40 | 1);
+            for b in chord {
+                p.apply(&Action::Midi { b });
+            }
+            // 128 frames at 44.1 kHz: SHRUB's audio block
+            let (mut got, to) = (Vec::new(), p.hz * 128 / 44_100);
+            run_to(&mut p, to, &mut got);
+            got.len()
+        };
+        assert!(block(1) < chord.len()); // the jack's 320 us a byte: 3.8 ms for the chord
+        assert_eq!(block(16), chord.len());
     }
 }

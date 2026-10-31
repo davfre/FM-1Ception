@@ -309,6 +309,7 @@ pub struct Cpu {
 /// memory and peripherals unchanged, run on identically. (fm1_soc's polling-loop skip compares
 /// them, and puts one back after a probe that found no loop.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlainState {
     pc: u32,
     regs: [u32; 16],
@@ -327,7 +328,117 @@ pub struct PlainState {
     ie: bool,
     nest_ok: bool,
     unknown_const_count: u64,
+    #[cfg_attr(feature = "state", serde(skip))]
     stuck_on: Option<&'static str>,
+}
+
+/// Everything of a core that what it does next depends on (`Cpu::core_state`), in or out of a
+/// pair, predicated block, repeat loop or interrupt: not its decoded or compiled code, which it
+/// builds again, nor its statistics. A save-state's part for a core.
+#[cfg(feature = "state")]
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CoreState {
+    core_id: u32,
+    pc: u32,
+    regs: [u32; 16],
+    sp: u32,
+    ssp: u32,
+    usp: u32,
+    user: bool,
+    user_irq: u32,
+    rets: u32,
+    insn_count: u64,
+    rep_start: u32,
+    rep_end: u32,
+    rep_reg: Option<usize>,
+    rep_count: u32,
+    pred_skips: Vec<(u32, u32)>,
+    cc: bool,
+    flags: u32,
+    sreg_store: [u32; 7],
+    pair_pending: Option<([u32; 16], [u32; 16])>,
+    unknown_const_count: u64,
+    jit_on: bool,
+    ie: bool,
+    irq_levels: Vec<u8>,
+    nest_ok: bool,
+    hold_irq: u32,
+    stop_pc: u32,
+    stop_io: u32,
+    stop_rest: u32,
+    stop_checks: bool,
+}
+
+#[cfg(feature = "state")]
+impl Cpu {
+    pub fn core_state(&self) -> CoreState {
+        CoreState {
+            core_id: self.core_id,
+            pc: self.pc,
+            regs: self.regs,
+            sp: self.sp,
+            ssp: self.ssp,
+            usp: self.usp,
+            user: self.user,
+            user_irq: self.user_irq,
+            rets: self.rets,
+            insn_count: self.insn_count,
+            rep_start: self.rep_start,
+            rep_end: self.rep_end,
+            rep_reg: self.rep_reg,
+            rep_count: self.rep_count,
+            pred_skips: self.pred_skips.clone(),
+            cc: self.cc,
+            flags: self.flags,
+            sreg_store: self.sreg_store,
+            pair_pending: self.pair_pending,
+            unknown_const_count: self.unknown_const_count,
+            jit_on: self.jit_on,
+            ie: self.ie,
+            irq_levels: self.irq_levels.clone(),
+            nest_ok: self.nest_ok,
+            hold_irq: self.hold_irq,
+            stop_pc: self.stop_pc,
+            stop_io: self.stop_io,
+            stop_rest: self.stop_rest,
+            stop_checks: self.stop_checks,
+        }
+    }
+
+    /// A core in a saved state, with nothing decoded or compiled yet. (A halt's reason is not
+    /// kept: a halted machine is not saved.)
+    pub fn from_core_state(s: &CoreState) -> Cpu {
+        let mut c = Cpu::new(s.pc);
+        c.core_id = s.core_id;
+        c.regs = s.regs;
+        c.sp = s.sp;
+        c.ssp = s.ssp;
+        c.usp = s.usp;
+        c.user = s.user;
+        c.user_irq = s.user_irq;
+        c.rets = s.rets;
+        c.insn_count = s.insn_count;
+        c.rep_start = s.rep_start;
+        c.rep_end = s.rep_end;
+        c.rep_reg = s.rep_reg;
+        c.rep_count = s.rep_count;
+        c.pred_skips = s.pred_skips.clone();
+        c.cc = s.cc;
+        c.flags = s.flags;
+        c.sreg_store = s.sreg_store;
+        c.pair_pending = s.pair_pending;
+        c.unknown_const_count = s.unknown_const_count;
+        c.jit_on = s.jit_on;
+        c.ie = s.ie;
+        c.irq_levels = s.irq_levels.clone();
+        c.nest_ok = s.nest_ok;
+        c.hold_irq = s.hold_irq;
+        c.stop_pc = s.stop_pc;
+        c.stop_io = s.stop_io;
+        c.stop_rest = s.stop_rest;
+        c.stop_checks = s.stop_checks;
+        c
+    }
 }
 
 impl PlainState {

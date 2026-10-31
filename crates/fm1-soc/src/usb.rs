@@ -70,6 +70,7 @@ const S_RXCOUNT2: u32 = 23;
 const NEP: usize = 5;
 
 #[derive(Clone, Copy, Default, Debug)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Ep {
     txmaxp: u8,
     rxmaxp: u8,
@@ -107,6 +108,7 @@ pub trait Dma {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 enum Stage {
     #[default]
     Setup,
@@ -116,6 +118,7 @@ enum Stage {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Ctl {
     setup: [u8; 8],
     stage: Stage,
@@ -126,6 +129,7 @@ struct Ctl {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 enum Step {
     #[default]
     DevDesc8,
@@ -139,6 +143,7 @@ enum Step {
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 enum HostState {
     /// No device on the bus (no pull-up).
     #[default]
@@ -155,6 +160,7 @@ enum HostState {
 
 /// Something that happened on the bus, for the front end.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub enum UsbEvent {
     /// Enumerated and configured: the product string, vendor and product ids.
     Configured { product: String, vid: u16, pid: u16 },
@@ -165,6 +171,7 @@ pub enum UsbEvent {
 }
 
 #[derive(Default)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct Usb {
     /// A cable to a host: without it the SIE never answers and nothing happens on the bus.
     pub cable: bool,
@@ -202,6 +209,7 @@ pub struct Usb {
     rx_sysex: Vec<u8>,
     pub events: Vec<UsbEvent>,
     /// FM1_USB_TRACE: the host's transactions on stderr.
+    #[cfg_attr(feature = "state", serde(skip))]
     pub trace: bool,
     /// SIE accesses so far (CPU cost: times `sie_cycles`).
     pub sie_accesses: u64,

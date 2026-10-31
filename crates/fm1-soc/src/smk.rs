@@ -74,13 +74,16 @@ pub const NLED: usize = 19;
 /// The pad LED chain: pad p is LED `PAD_SLOT[p]` in the chain.
 const PAD_SLOT: [usize; NPAD] = [0, 15, 14, 13, 12, 11, 10, 9, 1, 2, 3, 4, 5, 6, 7, 8];
 
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct Panel {
     /// the 595 chain as shifted (the last 4 bytes) and as latched
     sr: u32,
     pub latched: u32,
     /// keys 0..36, then buttons
+    #[cfg_attr(feature = "state", serde(with = "crate::state::arr"))]
     pub down: [bool; NKEY + NBTN],
     /// cycle the second contact of each key closes at (u64::MAX: open)
+    #[cfg_attr(feature = "state", serde(with = "crate::state::arr"))]
     c2_at: [u64; NKEY],
     /// the pads' colours, 0xRRGGBB, from the last LED frame
     pub pads: [u32; NPAD],

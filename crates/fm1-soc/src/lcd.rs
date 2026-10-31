@@ -6,6 +6,7 @@ pub const W: usize = 240;
 pub const H: usize = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 enum Phase {
     /// Expecting a command byte (D/C low).
     Cmd,
@@ -15,7 +16,9 @@ enum Phase {
     Pixel,
 }
 
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct Lcd {
+    #[cfg_attr(feature = "state", serde(skip))]
     pub fb: Vec<u16>,
     window: (u16, u16, u16, u16),
     cursor: (u16, u16),

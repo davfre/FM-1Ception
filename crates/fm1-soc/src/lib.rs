@@ -35,6 +35,8 @@ pub mod periph;
 mod ram;
 pub mod smk;
 mod spiflash;
+#[cfg(feature = "state")]
+pub mod state;
 pub mod usb;
 
 pub use lcd::{write_bmp, Lcd};
@@ -160,6 +162,7 @@ impl std::hash::Hasher for AddrHasher {
 /// and Starrykey 37 Play share one: fm1-to-smk37 docs/01-hardware.md). Same chip, flash
 /// layout, audio and update path; the panel's wiring differs (smk.rs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub enum Board {
     #[default]
     Fm1,
@@ -178,20 +181,27 @@ impl Board {
     }
 }
 
+/// (A save-state, state.rs, keeps the memories apart from the rest, and none of the debugging aids.)
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 pub struct Soc {
     pub board: Board,
     /// The BT baseband's window base (0x2FC44), as the firmware set it.
     bt_window: u32,
+    #[cfg_attr(feature = "state", serde(skip))]
     pub xip: Vec<u8>,
+    #[cfg_attr(feature = "state", serde(skip))]
     pub ram: Ram,
     pub lcd: Lcd,
     /// SPI0 + the external NOR flash (1 MiB; `--flash` image loaded at 0).
     pub flash: SpiFlash,
     /// Console bytes written through DBG_MSG / UART-style debug boxes.
+    #[cfg_attr(feature = "state", serde(skip))]
     pub console: Vec<u8>,
     /// Overlay RAM (second bank, 0x04000000), written by the app CRT.
+    #[cfg_attr(feature = "state", serde(skip))]
     pub ovl: Ram,
     /// SRAM banks at 0x01f00000 (cleared by the RAM early init).
+    #[cfg_attr(feature = "state", serde(skip))]
     pub sram2: Ram,
     /// monotonic "time" for peripheral counters
     pub ticks: u64,
@@ -200,6 +210,7 @@ pub struct Soc {
     /// Plain SFR words: the aligned ones below `SFR_LO_END` in an array (the GPIO and clock
     /// windows, written at every port write), the rest in the map.
     sfr_lo: Vec<u32>,
+    #[cfg_attr(feature = "state", serde(serialize_with = "state::sorted_map"))]
     sfr: std::collections::HashMap<u32, u32, std::hash::BuildHasherDefault<AddrHasher>>,
     /// Core 0 / 1 paused by the other (C0_CON / C1_CON bit 2 pulses, bit 3 resumes).
     paused: [bool; 2],
@@ -227,6 +238,7 @@ pub struct Soc {
     /// pause, not a release, and a later 0 -> 1 of 0x10008 bit 3 latches nothing (core 1 runs on).
     cpu1_released_once: bool,
     /// FM1_AUDIO_TRACE: log each audio half-buffer (debugging the DMA's pace).
+    #[cfg_attr(feature = "state", serde(skip))]
     audio_trace: bool,
     /// The CRC-16 unit's register (0x13504).
     crc: u16,
@@ -235,9 +247,12 @@ pub struct Soc {
     /// The cores' hardware lock (`lockset` / `lockclr`): which core holds it.
     lock_owner: Option<u32>,
     /// FM1_GPIO_TRACE: GPIO register writes by address (debugging port use).
+    #[cfg_attr(feature = "state", serde(skip))]
     pub gpio_writes: Option<std::collections::BTreeMap<u32, u64>>,
+    #[cfg_attr(feature = "state", serde(skip))]
     unknown_log: Vec<UnknownAccess>,
     /// `--flaky-core1`: core 1's RAM loads misread now and then (flaky.rs); None = a good unit.
+    #[cfg_attr(feature = "state", serde(skip))]
     pub flaky_core1: Option<flaky::FlakyCore1>,
     /// The power domain's analog registers.
     pub p33: p33::P33,
@@ -254,9 +269,11 @@ pub struct Soc {
 }
 
 /// The chip as the loader hands it to the app (`Soc::chip_reset`).
+#[cfg_attr(feature = "state", derive(serde::Serialize, serde::Deserialize))]
 struct Boot {
     cpu: fm1_core::PlainState,
     sfr_lo: Vec<u32>,
+    #[cfg_attr(feature = "state", serde(serialize_with = "state::sorted_map"))]
     sfr: std::collections::HashMap<u32, u32, std::hash::BuildHasherDefault<AddrHasher>>,
     sfc: (u32, (u32, u32)),
     bt_window: u32,

@@ -171,6 +171,17 @@ impl Asm {
     pub fn lsrv(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x1ac0_2400 | rm << 16 | rn << 5 | rd); }
     pub fn asrv(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x1ac0_2800 | rm << 16 | rn << 5 | rd); }
     pub fn lsrv_x(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9ac0_2400 | rm << 16 | rn << 5 | rd); }
+    pub fn lslv_x(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9ac0_2000 | rm << 16 | rn << 5 | rd); }
+    pub fn asrv_x(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9ac0_2800 | rm << 16 | rn << 5 | rd); }
+    pub fn rorv_x(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9ac0_2c00 | rm << 16 | rn << 5 | rd); }
+    /// `ror xd, xn, #sh` (`extr xd, xn, xn, #sh`)
+    pub fn ror_imm_x(&mut self, rd: Reg, rn: Reg, sh: u32) { self.e(0x93c0_0000 | rn << 16 | (sh & 63) << 10 | rn << 5 | rd); }
+    /// xd = xa ± wn * wm, the product 64-bit: `smaddl` / `smsubl` / `umaddl` / `umsubl`
+    pub fn maddl(&mut self, signed: bool, sub: bool, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
+        self.e(if signed { 0x9b20_0000 } else { 0x9ba0_0000 } | (sub as u32) << 15 | rm << 16 | ra << 10 | rn << 5 | rd);
+    }
+    /// `cmp xn, wm, sxtw` / `cmp xn, wm, uxtw`
+    pub fn cmp_x_xtw(&mut self, rn: Reg, wm: Reg, signed: bool) { self.e(if signed { 0xeb20_c000 } else { 0xeb20_4000 } | wm << 16 | rn << 5 | ZR); }
     pub fn mul(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x1b00_7c00 | rm << 16 | rn << 5 | rd); }
     pub fn umull(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9ba0_7c00 | rm << 16 | rn << 5 | rd); }
     pub fn smull(&mut self, rd: Reg, rn: Reg, rm: Reg) { self.e(0x9b20_7c00 | rm << 16 | rn << 5 | rd); }

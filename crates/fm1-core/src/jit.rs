@@ -1639,6 +1639,71 @@ fn emit_op<B: Bus>(g: &mut Gen, fast: Fast, idx: u32, next_pc: u32, profile: boo
             }
             g.st_reg(0, ((raw >> 28) & 0xf) as u8);
         }
+        // the 64-bit register-pair ops of exec_raw's route 21 (the pair x0 = rH:rL, its low
+        // register even); the divisions, `f6`, stay with the executor
+        Fast::Raw { route: 21, raw } if matches!(raw & 0xff, 0xd0 | 0xd4 | 0xd8 | 0xdc | 0xde | 0xdf | 0xf8 | 0xfc | 0xfe) => {
+            let pair = |g: &mut Gen, p: u8| {
+                g.ld_reg(0, 2 * p);
+                g.ld_reg(1, 2 * p + 1);
+                g.a.add_x_lsl(0, 0, 1, 32);
+            };
+            let n = ((raw >> 16) & 0xf) | (((raw >> 24) & 3) << 4);
+            let rb = ((raw >> 24) & 0xf) as u8;
+            match raw & 0xff {
+                // rD = the pair rQ shifted right, saturated to 32 bits
+                op @ (0xde | 0xdf) => {
+                    pair(g, ((raw >> 21) & 7) as u8);
+                    let signed = if op == 0xdf { raw & 0x1_0000 != 0 } else { raw & 0x0800_0000 != 0 };
+                    match (op, signed) {
+                        (0xdf, true) => { g.ld_reg(2, rb); g.a.asrv_x(0, 0, 2); }
+                        (0xdf, false) => { g.ld_reg(2, rb); g.a.lsrv_x(0, 0, 2); }
+                        (_, true) => g.a.asr_imm_x(0, 0, n),
+                        _ => g.a.lsr_imm_x(0, 0, n),
+                    }
+                    // the bound past which it saturates: i32::MAX, or i32::MIN below zero; u32::MAX
+                    if signed {
+                        g.a.asr_imm_x(2, 0, 63);
+                        g.a.mov32(1, i32::MAX as u32);
+                        g.a.eor(1, 1, 2);
+                    } else {
+                        g.a.mov32(1, u32::MAX);
+                    }
+                    g.a.cmp_x_xtw(0, 0, signed);
+                    g.a.csel(0, 0, 1, AC::Eq);
+                    g.st_reg(0, ((raw >> 28) & 0xf) as u8);
+                }
+                op => {
+                    let p = ((raw >> 29) & 7) as u8;
+                    pair(g, p);
+                    match op {
+                        0xd0 => match (raw >> 26) & 3 {
+                            0 | 1 => g.a.lsl_imm_x(0, 0, n),
+                            2 => g.a.lsr_imm_x(0, 0, n),
+                            _ => g.a.asr_imm_x(0, 0, n),
+                        },
+                        0xd8 => {
+                            g.ld_reg(2, rb);
+                            match (raw >> 16) & 3 {
+                                0 | 1 => g.a.lslv_x(0, 0, 2),
+                                2 => g.a.lsrv_x(0, 0, 2),
+                                _ => g.a.asrv_x(0, 0, 2),
+                            }
+                        }
+                        0xd4 => g.a.ror_imm_x(0, 0, n),
+                        0xdc => { g.ld_reg(2, rb); g.a.rorv_x(0, 0, 2); }
+                        // rP = rA * rB, rP += rA * rB, rP -= rA * rB (u|s, bit 28)
+                        _ => {
+                            g.ld_reg(2, ((raw >> 20) & 0xf) as u8);
+                            g.ld_reg(3, rb);
+                            g.a.maddl((raw >> 28) & 1 != 0, op == 0xfe, 0, 2, 3, if op == 0xf8 { ZR } else { 0 });
+                        }
+                    }
+                    g.st_reg(0, 2 * p);
+                    g.a.lsr_imm_x(0, 0, 32);
+                    g.st_reg(0, 2 * p + 1);
+                }
+            }
+        }
         Fast::LdPair { p, b, off } => {
             match b {
                 Base::Reg(r) => g.ld_reg(0, r),
@@ -2449,6 +2514,26 @@ mod tests {
             Fast::SetIe { on: false }, Fast::SetIe { on: true }, Fast::IcfgRd { d: 3 }, Fast::IcfgWr { s: 4 }]);
         // (route 22: rev8, rev16, revs inline, popcnt through the executor; into another and the same register)
         for form in 0..4u32 { for d in [0u32, 1] { cases.push(Fast::Raw { route: 22, raw: d << 28 | 1 << 24 | form << 22 | 0xe070 }); } }
+        // (route 21: the pair shifts, rotates, saturating shifts and wide multiplies, sources in
+        // and out of the pair written)
+        let n6 = |n: u32| (n >> 4 & 3) << 24 | (n & 0xf) << 16;
+        for p in [0u32, 1] {
+            for n in [0u32, 1, 31, 32, 33, 63] {
+                for op in 0..4u32 { cases.push(Fast::Raw { route: 21, raw: p << 29 | op << 26 | n6(n) | 0xe1d0 }); }
+                cases.push(Fast::Raw { route: 21, raw: p << 29 | n6(n) | 0xe1d4 });
+            }
+            for rb in [0u32, 3, 4] {
+                for op in 0..4u32 { cases.push(Fast::Raw { route: 21, raw: p << 29 | rb << 24 | op << 16 | 0xe1d8 }); }
+                cases.push(Fast::Raw { route: 21, raw: p << 29 | rb << 24 | 0xe1dc });
+            }
+            for (ra, rb) in [(1u32, 2u32), (0, 1), (3, 3), (2, 0)] { for s in [0u32, 1] { for op in [0xf8u32, 0xfc, 0xfe] {
+                cases.push(Fast::Raw { route: 21, raw: p << 29 | s << 28 | rb << 24 | ra << 20 | 0xe100 | op });
+            } } }
+        }
+        for (d, q) in [(0u32, 0u32), (5, 1), (2, 1)] { for s in [0u32, 1] {
+            for n in [0u32, 1, 16, 31, 32, 63] { cases.push(Fast::Raw { route: 21, raw: d << 28 | s << 27 | q << 21 | n6(n) | 0xe1de }); }
+            for rb in [1u32, 4] { cases.push(Fast::Raw { route: 21, raw: d << 28 | rb << 24 | q << 21 | s << 16 | 0xe1df }); }
+        } }
         let mut jit = Jit::new(false).unwrap();
         for (j, mut fast) in cases.into_iter().enumerate() {
             for round in 0..24 {
