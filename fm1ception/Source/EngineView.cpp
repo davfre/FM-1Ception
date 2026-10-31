@@ -88,7 +88,7 @@ constexpr int kBlacks[11][2] { { 1, 0 }, { 3, 1 }, { 5, 2 }, { 8, 4 }, { 10, 5 }
                                { 15, 8 }, { 17, 9 }, { 20, 11 }, { 22, 12 }, { 25, 14 } };
 constexpr int kFirstKey = 14;
 
-// The hardware layout: fm1-live's front panel (third_party/fm1-emu/crates/fm1-live/src/panel.rs),
+// The hardware layout: fm1-live's front panel (crates/fm1-live/src/panel.rs),
 // 1280 x 820, drawn at half size under the strip
 constexpr float kPanelW = 1280.0f, kPanelH = 820.0f, kPanelScale = 0.5f;
 const R kPanelLcd { 370.0f, 42.0f, 480.0f, 480.0f };

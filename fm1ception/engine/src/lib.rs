@@ -1,6 +1,6 @@
 //! FM-1Ception's engines. Each handle is one emulated FM-1 on a thread of its own: upstream's
-//! plug-in machine thread (third_party/fm1-emu/crates/fm1-plugin/src/engine.rs) and its .fm1save
-//! codec, compiled from the submodule, behind a C ABI (include/fm1ception_engine.h). A project
+//! plug-in machine thread (crates/fm1-plugin/src/engine.rs) and its .fm1save codec, compiled
+//! from the repository's crates, behind a C ABI (include/fm1ception_engine.h). A project
 //! keeps each engine's whole machine (fm1-soc's save-states) besides its firmware and flash.
 //!
 //! Upstream reads its nih-plug parameter set from the machine thread; `Fm1Params` here is the part
@@ -12,10 +12,10 @@ use std::ffi::{c_char, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-#[path = "../../third_party/fm1-emu/crates/fm1-plugin/src/engine.rs"]
+#[path = "../../../crates/fm1-plugin/src/engine.rs"]
 #[allow(dead_code)]
 mod engine;
-#[path = "../../third_party/fm1-emu/crates/fm1-plugin/src/savefile.rs"]
+#[path = "../../../crates/fm1-plugin/src/savefile.rs"]
 #[allow(dead_code)]
 mod savefile;
 

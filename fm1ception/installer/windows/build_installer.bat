@@ -7,7 +7,7 @@ rem Setup installer. Run inside the Windows VM (or any Windows box with Visual S
 rem CMake, Rust with the x86_64-pc-windows-msvc target, and Inno Setup 6):
 rem   installer\windows\build_installer.bat [--skip-build]
 rem
-rem JUCE is the shared checkout beside the repo (..\Libraries\Juce), and fm1-emu the submodule.
+rem JUCE is the shared checkout beside the repository (..\Libraries\Juce); the emulator is the repository itself.
 rem
 rem Environment overrides:
 rem   FM1C_BUILD_DIR      local build dir (default C:\fm1ception-build\x64). Keep it off the

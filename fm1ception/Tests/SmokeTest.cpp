@@ -277,7 +277,7 @@ int snapshots (const juce::File& dir, const juce::File& fw)
         FirmwareLibrary lib (tmp.getChildFile ("library.json"));
         lib.setRoot (folder);
         lib.waitForScan (30000);
-        const auto list = juce::File (__FILE__).getParentDirectory().getParentDirectory().getChildFile ("third_party/fm1-emu/web/firmwares.json");
+        const auto list = juce::File (__FILE__).getParentDirectory().getParentDirectory().getParentDirectory().getChildFile ("web/firmwares.json");
         CloudCatalog cloud (lib, tmp.getChildFile ("cloud.json"), juce::URL (list), {});
         const auto felucca = folder.getChildFile ("Cloud/Felucca 1.6.1.fwsc"), salt = folder.getChildFile ("Cloud/Felucca [Salt] 0.8.fwsc");
         fw.copyFileTo (felucca);
@@ -842,7 +842,7 @@ int main (int argc, char** argv)
         const auto repo = juce::File (__FILE__).getParentDirectory().getParentDirectory();
         std::vector<Entry> listed;
         juce::String error;
-        const bool reads = CloudCatalog::parse (repo.getChildFile ("third_party/fm1-emu/web/firmwares.json").loadFileAsString(), listed, error);
+        const bool reads = CloudCatalog::parse (repo.getParentDirectory().getChildFile ("web/firmwares.json").loadFileAsString(), listed, error);
         check (reads && listed.size() >= 50, "fm1-emu's list reads: " + juce::String ((int) listed.size()) + " firmwares " + error);
         auto byId = [&listed] (const juce::String& id) -> const Entry*
         {

@@ -2,7 +2,7 @@
 # Build every FM-1Ception installer from the Mac — Xfer Records
 #
 # macOS is built natively; Windows is built inside the Parallels VM through `prlctl exec`,
-# reading this checkout (and ../Libraries/Juce) over the Parallels shared "Home" folder.
+# reading this checkout (and the Libraries/Juce beside it) over the Parallels shared "Home" folder.
 # Everything lands in <repo>/Installers; per-platform logs go to <repo>/build-logs.
 #
 # Usage:

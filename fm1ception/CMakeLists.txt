@@ -42,13 +42,13 @@ project(FM1Ception VERSION 1.0.0 LANGUAGES C CXX)
 # ---------------------------------------------------------------------------
 # JUCE — the shared checkout, as every other plugin here does
 # ---------------------------------------------------------------------------
-set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Libraries/Juce"
+set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Libraries/Juce"
     CACHE PATH "Path to JUCE framework")
 
 if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "JUCE not found at ${JUCE_DIR}\n"
-        "Expected it as a sibling of this folder, at ../Libraries/Juce.\n"
+        "Expected it beside the repository, at ../Libraries/Juce.\n"
         "Point at it explicitly with -DJUCE_DIR=/path/to/JUCE")
 endif()
 
@@ -60,18 +60,16 @@ foreach(_t IN LISTS _juce_targets)
 endforeach()
 
 # ---------------------------------------------------------------------------
-# The emulator — fm1-emu, a submodule, is NOT copied here.
+# The emulator — fm1-emu: this repository is its fork, the plug-in in fm1ception/.
 #
 # engine/ is a small Rust crate that compiles fm1-emu's CPU, SoC and its
-# plug-in machine thread straight out of third_party/fm1-emu and exposes them
-# as a C ABI. Cargo builds it once per architecture; a universal build joins
-# them with lipo.
+# plug-in machine thread straight out of the repository's crates/ and exposes
+# them as a C ABI. Cargo builds it once per architecture; a universal build
+# joins them with lipo.
 # ---------------------------------------------------------------------------
-set(FM1EMU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fm1-emu")
+set(FM1EMU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
 if(NOT EXISTS "${FM1EMU_DIR}/crates/fm1-plugin/src/engine.rs")
-    message(FATAL_ERROR
-        "fm1-emu not found at ${FM1EMU_DIR}\n"
-        "Run: git submodule update --init third_party/fm1-emu")
+    message(FATAL_ERROR "fm1-emu not found at ${FM1EMU_DIR}: build fm1ception/ inside its repository")
 endif()
 
 find_program(CARGO cargo HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)
