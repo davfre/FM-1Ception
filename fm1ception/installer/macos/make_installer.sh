@@ -11,10 +11,11 @@
 # The installer's name comes from installer/label.txt ("1.0.0b1"), which starts with the
 # project's version in CMakeLists.txt.
 #
-# Environment overrides:
-#   FM1C_APP_IDENTITY     "Developer ID Application: ..."
-#   FM1C_PKG_IDENTITY     "Developer ID Installer: ..."
-#   FM1C_NOTARY_PROFILE   notarytool keychain profile (default fm1ception-notary)
+# Signing, from the environment or installer/macos/signing.local.sh (not in git), which sets:
+#   FM1C_APP_IDENTITY     "Developer ID Application: ..."  (default: the keychain's first)
+#   FM1C_PKG_IDENTITY     "Developer ID Installer: ..."    (default: the keychain's first)
+#   FM1C_NOTARY_PROFILE   notarytool keychain profile, from `xcrun notarytool store-credentials`
+#                         (default fm1ception-notary)
 set -euo pipefail
 
 SKIP_BUILD=0
@@ -31,9 +32,15 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-APP_IDENTITY="${FM1C_APP_IDENTITY:-Developer ID Application: Your Name (TEAMID)}"
-PKG_IDENTITY="${FM1C_PKG_IDENTITY:-Developer ID Installer: Your Name (TEAMID)}"
+[ -f "$ROOT/installer/macos/signing.local.sh" ] && . "$ROOT/installer/macos/signing.local.sh"
+first_identity() {   # $1 = "Developer ID Application" or "Developer ID Installer"
+    security find-identity -v -p basic | sed -nE "s/.*\"($1: [^\"]+)\".*/\1/p" | head -1
+}
+APP_IDENTITY="${FM1C_APP_IDENTITY:-$(first_identity "Developer ID Application")}"
+PKG_IDENTITY="${FM1C_PKG_IDENTITY:-$(first_identity "Developer ID Installer")}"
 NOTARY_PROFILE="${FM1C_NOTARY_PROFILE:-fm1ception-notary}"
+[ -n "$APP_IDENTITY" ] || { echo "ERROR: no Developer ID Application identity (set FM1C_APP_IDENTITY)"; exit 1; }
+[ -n "$PKG_IDENTITY" ] || { echo "ERROR: no Developer ID Installer identity (set FM1C_PKG_IDENTITY)"; exit 1; }
 
 PROD="FM-1Ception"
 TARGET="FM1Ception"

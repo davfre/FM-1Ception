@@ -227,7 +227,9 @@ int snapshots (const juce::File& dir, const juce::File& fw)
         folder.getChildFile ("Community").createDirectory();
         fw.copyFileTo (folder.getChildFile ("Community/SHRUB.fwsc"));
         fw.copyFileTo (folder.getChildFile ("Community/SHRUB-0.3.fwsc"));
-        const juce::File rb ("/Users/someone/Documents/GitHub/FM1-RB338/fm1/build/rb338.fwsc");
+        // a second firmware for the shot, if $FM1C_SNAPSHOT_EXTRA names one
+        const juce::String extra = juce::SystemStats::getEnvironmentVariable ("FM1C_SNAPSHOT_EXTRA", {});
+        const juce::File rb = juce::File::isAbsolutePath (extra) ? juce::File (extra) : juce::File();
         if (rb.existsAsFile())
             rb.copyFileTo (folder.getChildFile ("Community/rb338.fwsc"));
         folder.getChildFile ("broken.fwsc").replaceWithText ("x");

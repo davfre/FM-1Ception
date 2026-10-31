@@ -2,3 +2,4 @@
 /build-release
 /build-logs
 /Installers
+/installer/macos/signing.local.sh
