@@ -16,7 +16,7 @@ use std::borrow::Cow;
 
 const MAGIC: &[u8; 8] = b"FM1STATE";
 /// Bumped when what is saved changes: a state of another layout is refused.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 /// magic, format, the fresh boot's fingerprint and clock
 const HEADER: usize = 8 + 4 + 8 + 8;
 
@@ -197,6 +197,17 @@ pub(crate) fn sorted_map<S: serde::Serializer, H>(m: &std::collections::HashMap<
     s.collect_map(v)
 }
 
+/// `sorted_map` for any copied value (the EQ's filter states): a state's bytes do not depend on
+/// the map's order.
+pub(crate) fn sorted_pairs<S: serde::Serializer, V: serde::Serialize + Copy, H>(
+    m: &std::collections::HashMap<u32, V, H>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    let mut v: Vec<(u32, V)> = m.iter().map(|(&k, &v)| (k, v)).collect();
+    v.sort_unstable_by_key(|p| p.0);
+    s.collect_map(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +230,7 @@ mod tests {
         soc.flash.mem[0x5000] = 0;
         let mut cpu = Cpu::new(0x0200_0000);
         cpu.regs[3] = 99;
-        cpu.pred_skips.push((0x0200_0010, 0x0200_0020));
+        cpu.pred_skips.push((0x0200_0010, 0x0200_0020, 0x0200_0008));
         let mut cpu1 = Cpu::new(0x01c0_22b6);
         cpu1.core_id = 1;
 

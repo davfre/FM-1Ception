@@ -27,6 +27,10 @@ use fm1_core::Bus;
 
 pub mod script;
 pub mod flaky;
+pub mod hwdsp;
+pub mod hweq;
+pub mod hwsrc;
+mod hwsrc_kernel;
 pub mod fwsc;
 mod lcd;
 pub mod machine;
@@ -93,6 +97,12 @@ enum Region {
     Irqc2,
     /// ALNK0 I2S out.
     Alnk,
+    /// JL_FFT, the FFT / vector unit (hwdsp.rs).
+    HwDsp,
+    /// JL_EQ and its RAM (hweq.rs).
+    HwEq,
+    /// JL_SRC, the sample-rate converter (hwsrc.rs).
+    HwSrc,
     Sram2,
     Unknown,
 }
@@ -256,6 +266,12 @@ pub struct Soc {
     pub flaky_core1: Option<flaky::FlakyCore1>,
     /// The power domain's analog registers.
     pub p33: p33::P33,
+    /// The FFT / vector unit (JL_FFT, 0x1EE0400; hwdsp.rs).
+    pub hwdsp: hwdsp::HwDsp,
+    /// The EQ (JL_EQ, 0x1E000, its RAM at 0x1E800; hweq.rs).
+    pub hweq: hweq::HwEq,
+    /// The sample-rate converter (JL_SRC, 0x14300; hwsrc.rs).
+    pub hwsrc: hwsrc::HwSrc,
     /// USB0 and, with a cable (`usb_plug`), a host on the other end (usb.rs).
     pub usb: usb::Usb,
     /// Exact skipping of cpu0's polling loops (`machine::run_blocks`).
@@ -414,6 +430,9 @@ impl Soc {
             unknown_log: Vec::new(),
             flaky_core1: None,
             p33: Default::default(),
+            hwdsp: Default::default(),
+            hweq: hweq::HwEq::new(),
+            hwsrc: Default::default(),
             usb: Default::default(),
             // (FM1_TRACE: a trace shows every instruction as it runs, not a probe's)
             loop_skip: machine::LoopSkip::new(std::env::var_os("FM1_NO_LOOPSKIP").is_none() && std::env::var_os("FM1_TRACE").is_none()),
@@ -464,11 +483,11 @@ impl Soc {
         self.resets += 1;
         self.periph.chip_reset();
         self.p33.chip_reset(cause);
-        let cable = self.usb.cable;
-        self.usb = Default::default();
-        if cable {
+        let mut old = std::mem::take(&mut self.usb);
+        if old.cable {
             self.usb.plug(self.periph.hz);
         }
+        self.usb.keep_recording(&mut old); // (a computer's recording goes on across the reset)
         (self.paused, self.lock_owner, self.cpu1_release, self.cpu1_released_once, self.crc) = ([false; 2], None, false, false, 0);
         self.flash.chip_reset();
         cpu.set_plain_state(&boot.cpu);
@@ -533,7 +552,8 @@ impl Soc {
             Region::Timer => matches!(addr, 0x10800 | 0x10900 | 0x10908) || matches!(addr & !0x300, 0x10400 | 0x10408),
             // the SMK-37's matrix rows and SPI1 busy follow the clock; its ADC is left alone too
             Region::Gpio | Region::Adc | Region::Spi1 => fm1,
-            Region::Spi0 | Region::Rand | Region::Unknown => false,
+            // (the FFT / vector unit's done bit comes with the clock)
+            Region::Spi0 | Region::Rand | Region::HwDsp | Region::HwEq | Region::HwSrc | Region::Unknown => false,
         }
     }
 
@@ -675,6 +695,8 @@ impl Soc {
                 // FM-1's stock firmware touches the block too, as before: unknown.
                 0x16800..=0x16a1f if self.board == Board::Smk37 => Region::Usb,
                 0x20000..=0x2ffff => Region::Bt,
+                hweq::BASE..=hweq::END | hweq::RAM..=hweq::RAM_END => Region::HwEq,
+                hwsrc::BASE..=hwsrc::END => Region::HwSrc,
                 _ => Region::Unknown,
             };
         }
@@ -689,6 +711,7 @@ impl Soc {
             0x1eee000..=0x1eee0ff => Region::Irqc,
             0x1eef000..=0x1eef3ff => Region::Irqc2,
             0x1eee240..=0x1eee24f => Region::Dbg,
+            hwdsp::BASE..=hwdsp::END => Region::HwDsp,
             _ => Region::Unknown,
         }
     }
@@ -712,12 +735,18 @@ impl Soc {
     fn spi1_write(&mut self, addr: u32, value: u32) {
         match addr {
             0x11d00 => {
-                // CON: bit14 clears the pending transfer-done (and its IRQ 16)
+                // CON: bit14 clears the pending transfer-done (and its IRQ 16), bit13 enables
+                // the IRQ. The FM-1's stock LCD driver disables it before a transfer's interrupt
+                // is due; taken anyway, the interrupt finds its handler idle, which returns
+                // without clearing it, again and again.
                 if value & 0x4000 != 0 {
                     self.periph.spi1_pending = false;
                 }
-                let stored = self.sfr_get(addr);
-                self.sfr_set(addr, (stored & !0x4000) | (value & !0x4000));
+                if value & 0x2000 == 0 {
+                    self.periph.spi1_irq_off();
+                }
+                // (bit 15, done, is the read's; bit 14 only acts)
+                self.sfr_set(addr, value & !0xc000);
             }
             0x11d04 => self.sfr_set(addr, value), // BAUD
             0x11d08 => {
@@ -1048,6 +1077,9 @@ impl Soc {
                 (if addr == 0x13b00 { x } else { x >> 32 }) as u32
             }
             Region::P33 => self.p33.read(addr),
+            Region::HwDsp => self.hwdsp.read(addr, self.periph.cycles),
+            Region::HwEq => self.hweq.read(addr, self.periph.cycles),
+            Region::HwSrc => self.hwsrc.read(addr, self.periph.cycles),
             Region::Unknown => {
                 self.log_unknown(addr, 4, false, 0);
                 0
@@ -1204,6 +1236,25 @@ impl Soc {
                 self.sfr_set(addr, value);
                 self.sfc_reread();
             }
+            Region::HwDsp => {
+                // (the unit reads and writes RAM through the bus: taken out while it runs)
+                let mut u = std::mem::take(&mut self.hwdsp);
+                let cycles = self.periph.cycles;
+                u.write(self, addr, value, cycles);
+                self.hwdsp = u;
+            }
+            Region::HwEq => {
+                let mut u = std::mem::take(&mut self.hweq);
+                let cycles = self.periph.cycles;
+                u.write(self, addr, value, cycles);
+                self.hweq = u;
+            }
+            Region::HwSrc => {
+                let mut u = std::mem::take(&mut self.hwsrc);
+                let cycles = self.periph.cycles;
+                u.write(self, addr, value, cycles);
+                self.hwsrc = u;
+            }
             Region::Unknown => self.log_unknown(addr, 4, true, value),
         }
     }
@@ -1317,6 +1368,8 @@ mod tests {
             0x11900..=0x119ff => Region::Ana,
             0x13e08..=0x13e0f => Region::P33,
             0x20000..=0x2ffff => Region::Bt,
+            0x1e000..=0x1e01f | 0x1e800..=0x1eb3f => Region::HwEq,
+            0x14300..=0x14323 => Region::HwSrc,
             0x1eee240..=0x1eee24f => Region::Dbg,
             _ => Region::Unknown,
         }
@@ -1433,6 +1486,71 @@ mod tests {
         assert_eq!(soc.read32(0x0207_1000), 0xaaaa_aaaa, "the erase after the cut never happened");
         assert_eq!(soc.flash.ops, 3);
         assert!(soc.flash.cut());
+    }
+
+    /// A chip with IRQ 16 enabled in cpu0's bank and SPI1 at the LCD's BAUD.
+    fn spi1_soc(board: Board) -> Soc {
+        let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
+        soc.set_board(board);
+        soc.periph.icfg[(periph::IRQ_SPI1 >> 3) as usize] |= 1 << ((periph::IRQ_SPI1 & 7) * 4);
+        soc.write32(0x11d04, 3);
+        soc
+    }
+
+    #[test]
+    fn spi1_interrupt_comes_after_the_bytes_time_on_the_wire() {
+        let mut soc = spi1_soc(Board::Fm1);
+        soc.write32(0x11d00, 0xa021);
+        soc.write32(0x11d0c, RAM_BASE);
+        soc.write32(0x11d10, 0x800);
+        soc.advance(1_000);
+        assert_eq!(soc.periph.pending_irq(), None, "still on the wire");
+        soc.advance(1_000_000);
+        assert_eq!(soc.periph.pending_irq().map(|(n, _)| n), Some(periph::IRQ_SPI1));
+    }
+
+    #[test]
+    fn spi1_con_clears_its_interrupt_enable() {
+        let mut soc = spi1_soc(Board::Fm1);
+        soc.write32(0x11d00, 0xe021);
+        assert_ne!(soc.read32(0x11d00) & 0x2000, 0);
+        soc.write32(0x11d00, 0xc021);
+        assert_eq!(soc.read32(0x11d00) & 0x2000, 0);
+    }
+
+    #[test]
+    fn spi1_interrupt_disabled_before_it_is_due_never_comes() {
+        // the stock LCD driver (FM-1 V16) after a held key: a DMA started with the interrupt
+        // enabled, then acknowledged with the interrupt disabled before its bytes are out
+        let mut soc = spi1_soc(Board::Fm1);
+        soc.write32(0x11d00, 0xe021);
+        soc.write32(0x11d0c, RAM_BASE);
+        soc.write32(0x11d10, 0x800);
+        soc.write32(0x11d00, 0xc021);
+        soc.advance(1_000_000);
+        assert_eq!(soc.periph.pending_irq(), None);
+    }
+
+    #[test]
+    fn smk37_spi1_done_bit_is_busy_after_a_read_modify_write() {
+        // a driver that acknowledges with CON |= bit 14 writes back the done bit it read
+        let mut soc = spi1_soc(Board::Smk37);
+        soc.write32(0x11d08, 0x2c);
+        soc.advance(1_000);
+        let con = soc.read32(0x11d00);
+        soc.write32(0x11d00, con | 0x4000);
+        soc.write32(0x11d0c, RAM_BASE);
+        soc.write32(0x11d10, 0x800);
+        assert_eq!(soc.read32(0x11d00) & 0x8000, 0, "the DMA is still on the wire");
+    }
+}
+
+impl hwdsp::Mem for Soc {
+    fn rd(&mut self, a: u32) -> u32 {
+        self.read32(a)
+    }
+    fn wr(&mut self, a: u32, v: u32) {
+        self.write32(a, v)
     }
 }
 

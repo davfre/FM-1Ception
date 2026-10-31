@@ -27,7 +27,8 @@
 //! any program can play and talk to (Felucca's tools/fm1_install.py, the web installer, a DAW).
 //! It goes when the firmware drops off USB (the update mode), as the real one does.
 //! Headless (`--shot`): FM1_USB_SEND='MS:HEX…;MS:HEX…' sends those MIDI messages over USB at
-//! those times, and what comes back is printed.
+//! those times, and what comes back is printed. FM1_USB_WAV=FILE (`--bench` or `--shot`): the
+//! computer records the device's USB audio into FILE (FM1_USB_RATE: at that rate).
 //!
 //! `--flaky-core1 RATE [--seed N]`: core 1 misreads RAM now and then, as on some units
 //! (fm1_soc::flaky), for trying a firmware's fallback to one core.
@@ -294,6 +295,7 @@ fn bench(o: &Opts, ms: u64) {
         Ok(m) => m,
         Err(e) => { eprintln!("cannot read {}: {e}", o.bin); std::process::exit(1); },
     };
+    usb_audio_arm(&mut m);
     if std::env::var("FM1_BENCH_NOKEYS").is_ok() {
         m.soc.periph.script.clear();
     } else if script_keys(&mut m) {
@@ -323,6 +325,7 @@ fn bench(o: &Opts, ms: u64) {
         if sample && m.soc.periph.ms() > ms / 2 {
             for _ in 0..1000 {
                 if let Err(e) = m.run(97) {
+                    usb_audio_save(&m);
                     halted(&e);
                     std::process::exit(1);
                 }
@@ -332,6 +335,7 @@ fn bench(o: &Opts, ms: u64) {
             continue;
         }
         if let Err(e) = m.run(100_000) {
+            usb_audio_save(&m);
             halted(&e);
             std::process::exit(1);
         }
@@ -378,6 +382,7 @@ fn bench(o: &Opts, ms: u64) {
         let _ = std::fs::write(&path, bytes);
         println!("audio: {} samples -> {path}", m.soc.periph.audio.len());
     }
+    usb_audio_save(&m);
     dump_ram(&mut m);
     if let Ok(path) = std::env::var("FM1_BENCH_PANEL") {
         let leds = m.soc.periph.led_take();
@@ -524,6 +529,7 @@ fn shot(o: &Opts, ms: u64) {
         Ok(m) => m,
         Err(e) => return eprintln!("cannot read {}: {e}", o.bin),
     };
+    usb_audio_arm(&mut m);
     if std::env::var("FM1_NO_SKIP").is_ok() {
         m.soc.periph.skip_idle = false;
     }
@@ -555,6 +561,7 @@ fn shot(o: &Opts, ms: u64) {
             m.soc.periph.skip_idle = true;
         }
         if let Err(e) = m.run(100_000) {
+            usb_audio_save(&m);
             return halted(&e);
         }
         usb_headless(&mut m, &mut usb_sends);
@@ -564,12 +571,14 @@ fn shot(o: &Opts, ms: u64) {
         println!("usb: {} SIE accesses ({:.1} ms of CPU at {} cycles each), {} packets out, {} in",
                  u.sie_accesses, u.sie_accesses as f64 * u.sie_cycles as f64 * 1000.0 / m.soc.periph.hz as f64,
                  u.sie_cycles, u.out_packets, u.in_packets);
+        usb_audio_save(&m);
     }
     println!("irq levels at the end: {:?}, ie {}, skipped {} cycles", m.cpu.irq_levels, m.cpu.ie, m.soc.periph.skipped);
     let _ = m.soc.periph.led_take();
     let (mut in_isr, mut total) = (0u64, 0u64);
     while m.soc.periph.ms() < ms {
         if let Err(e) = m.run(1) {
+            usb_audio_save(&m);
             return halted(&e);
         }
         total += 1;
@@ -640,6 +649,35 @@ fn usb_script() -> VecDeque<(u64, Vec<u8>)> {
     }).collect();
     q.sort_by_key(|(t, _)| *t);
     q.into()
+}
+
+/// --usb with FM1_USB_WAV=FILE (--bench, --shot): the computer records the device's USB audio,
+/// asking for FM1_USB_RATE (default 44100).
+fn usb_audio_arm(m: &mut Machine) {
+    if std::env::var_os("FM1_USB_WAV").is_some() && m.soc.usb.cable {
+        let rate = std::env::var("FM1_USB_RATE").ok().and_then(|v| v.parse().ok()).unwrap_or(44_100);
+        m.soc.usb.audio_record(rate);
+    }
+}
+
+/// --usb with FM1_USB_WAV=FILE: what the computer recorded from the device's USB audio (the
+/// samples as sent, interleaved as its channels come, s16le, no header).
+fn usb_audio_save(m: &Machine) {
+    let Ok(path) = std::env::var("FM1_USB_WAV") else { return };
+    let u = &m.soc.usb;
+    if !u.cable {
+        return println!("usb audio: no USB cable (--usb); nothing -> {path}");
+    }
+    let Some(a) = &u.audio_stream else {
+        return println!("usb audio: the device has no audio streaming interface; nothing -> {path}");
+    };
+    if a.sample_bytes != 2 {
+        println!("usb audio: {}-byte samples are not decoded (16-bit only); nothing recorded", a.sample_bytes);
+    }
+    let bytes: Vec<u8> = u.audio.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let _ = std::fs::write(&path, bytes);
+    println!("usb audio: {} ch at {} Hz, {} samples in {} packets ({} empty, {} of them underruns) -> {path}",
+             a.channels, u.audio_rate, u.audio.len(), u.audio_packets, u.audio_empty, u.audio_underruns);
 }
 
 /// --shot with --usb: the scripted MIDI out over USB, and what happened on the bus.
@@ -851,7 +889,9 @@ env: FM1_BENCH_KEYS='T[-T2]:PLAY,T:n7,T:enc0:+3,T:pot:512,T:ms:mHEX'  scripted i
      FM1_NO_LOOPSKIP       run polling loops round by round instead of skipping them (byte-identical, slower)
      FM1_FLASH_CUT=N       cut the power half way through the Nth flash erase / program (--flash keeps what is left)
      FM1_USB_SEND='MS:HEX;…'  --shot --usb: MIDI messages over USB at those times (@PATH: from a file); FM1_USB_TRACE: the bus
-     FM1_USB_SIE_NS=N      --usb: each SIE register access takes N ns (default 1000)";
+     FM1_USB_SIE_NS=N      --usb: each SIE register access takes N ns (default 1000)
+     FM1_USB_WAV=FILE      --usb, --bench / --shot: record the USB audio as a computer would (s16le, no header);
+                           FM1_USB_RATE=HZ asks for that rate if the device lists it (default 44100)";
 
 fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {

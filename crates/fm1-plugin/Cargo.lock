@@ -337,6 +337,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -916,6 +925,7 @@ name = "fm1-core"
 version = "0.3.0"
 dependencies = [
  "fm1-isa",
+ "serde",
 ]
 
 [[package]]
@@ -944,7 +954,10 @@ dependencies = [
 name = "fm1-soc"
 version = "0.3.0"
 dependencies = [
+ "bincode",
  "fm1-core",
+ "miniz_oxide",
+ "serde",
 ]
 
 [[package]]
