@@ -80,6 +80,22 @@ void fm1e_enc (const Fm1e*, uint8_t enc, int32_t clicks);
 /* lcd: 240 x 240 RGB565; leds: 41 lit fractions (either may be null) */
 void fm1e_view (const Fm1e*, uint16_t* lcd, float* leds, Fm1eStatus* status);
 
+/* the firmware library's look at a .fwsc's bytes, without booting it (any thread): its identity
+   ("FM-1_901"), the name it gives itself ("SHRUB V0.4" from its code, "FM-1 Stock V15" for a stock
+   release; empty if neither) and a digest of the bytes (32 hex digits) that knows the file after a
+   move or rename. Each NUL-terminated, cut to fit. 0: an FM-1 package; -1: not one (name: why, digest
+   still set) */
+int fm1e_probe_package (const uint8_t* pkg, size_t len, char* identity, size_t identityCap,
+                        char* name, size_t nameCap, char* digest, size_t digestCap);
+
+/* A package booted fresh (its factory flash) with no engine, run flat out: its screen (FM1E_LCD_W x
+   FM1E_LCD_H RGB565) when its own clock reaches each of the n times in atMs (ascending), into lcd one
+   after another (n * 57600 values). Blocks for a second or so, at most about 30 s: call it from a
+   background thread. Returns the screens taken (fewer than n if the firmware stopped after the
+   first), or -1 (msg: why none; NUL-terminated, cut to fit) */
+int fm1e_screenshots (const uint8_t* pkg, size_t len, const uint32_t* atMs, size_t n, uint16_t* lcd,
+                      char* msg, size_t msgCap);
+
 bool fm1e_push_midi (const Fm1e*, uint64_t frame, uint8_t b0, uint8_t b1, uint8_t b2, uint8_t len);
 bool fm1e_pop (const Fm1e*, float* lr);
 void fm1e_starved (const Fm1e*, uint64_t frames);

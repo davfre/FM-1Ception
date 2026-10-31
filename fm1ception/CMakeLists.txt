@@ -146,6 +146,18 @@ set(FM1C_SOURCES
     Source/EngineView.h
     Source/EngineView.cpp
     Source/FirmwarePrefs.h
+    Source/CloudCatalog.h
+    Source/CloudCatalog.cpp
+    Source/CloudView.h
+    Source/CloudView.cpp
+    Source/FirmwareLibrary.h
+    Source/FirmwareLibrary.cpp
+    Source/InfoPanel.h
+    Source/InfoPanel.cpp
+    Source/ScreenCache.h
+    Source/ScreenCache.cpp
+    Source/LibraryWindow.h
+    Source/LibraryWindow.cpp
     Source/OutputMeter.h
     Source/OutputMeter.cpp
     Source/Theme.h
@@ -179,7 +191,8 @@ juce_add_plugin(FM1Ception
     NEEDS_MIDI_INPUT         TRUE
     NEEDS_MIDI_OUTPUT        FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
-    COPY_PLUGIN_AFTER_BUILD  TRUE
+    # installed by hand into /Library/Audio/Plug-Ins (the system folder), never the user's
+    COPY_PLUGIN_AFTER_BUILD  FALSE
     VST3_AUTO_MANIFEST       ${FM1C_VST3_AUTO_MANIFEST}
     # The emulator compiles firmware to native code: under the hardened
     # runtime the Standalone needs MAP_JIT pages (a plugin gets its host's).
@@ -232,6 +245,12 @@ if(FM1C_BUILD_TESTS)
         # test never opens a window.
         Source/PluginEditor.cpp
         Source/EngineView.cpp
+        Source/CloudCatalog.cpp
+        Source/CloudView.cpp
+        Source/FirmwareLibrary.cpp
+        Source/InfoPanel.cpp
+        Source/ScreenCache.cpp
+        Source/LibraryWindow.cpp
         Source/OutputMeter.cpp
     )
     target_include_directories(FM1CeptionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)

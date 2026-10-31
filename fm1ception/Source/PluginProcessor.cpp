@@ -688,6 +688,7 @@ void FM1CeptionProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("midiMode", midiMode.load(), nullptr);
     state.setProperty ("selected", selected.load(), nullptr);
     state.setProperty ("viewLayout", viewLayout.load(), nullptr);
+    state.setProperty ("viewOptions", viewOptions.load(), nullptr);
     state.setProperty ("multiOut", multiOut.load(), nullptr);
     state.appendChild (apvts.copyState(), nullptr);
 
@@ -741,7 +742,8 @@ void FM1CeptionProcessor::setStateInformation (const void* data, int sizeInBytes
     editorH = (int) state.getProperty ("editorH", 0);
     setMidiMode ((MidiMode) (int) state.getProperty ("midiMode", (int) MidiMode::selected));
     setSelected ((int) state.getProperty ("selected", 0));
-    viewLayout = juce::jlimit (0, 1, (int) state.getProperty ("viewLayout", (int) ViewLayout::tiled));
+    viewLayout = juce::jlimit (0, 2, (int) state.getProperty ("viewLayout", (int) ViewLayout::tiled));
+    viewOptions = (int) state.getProperty ("viewOptions", 0) & kViewOptionsMask;
     multiOut = (bool) state.getProperty ("multiOut", false);
 
     {

@@ -126,9 +126,25 @@ public:
     int getSelected() const noexcept { return juce::jmin (selected.load(), numEngines.load() - 1); }
     void setSelected (int slot) { selected = juce::jlimit (0, kMaxEngines - 1, slot); }
 
-    enum class ViewLayout { tiled = 0, tabbed = 1 };
+    /** tabbed and hardware show one engine at a time under tabs; hardware draws each as the FM-1's
+        front panel (fm1-emu's), not the screen with small controls under it. */
+    enum class ViewLayout { tiled = 0, tabbed = 1, hardware = 2 };
     ViewLayout getViewLayout() const noexcept { return (ViewLayout) viewLayout.load(); }
-    void setViewLayout (ViewLayout l) { viewLayout = juce::jlimit (0, 1, (int) l); ++layout; }
+    void setViewLayout (ViewLayout l) { viewLayout = juce::jlimit (0, 2, (int) l); ++layout; }
+
+    /** What every engine shows under its screen (MENU > View), as bits:
+          screensOnly    not the knobs' rows
+          editButtons    the panel's twelve buttons in a row of their own, not a popover
+          largeKeyboard  the keys across the whole engine, not the mini keyboard */
+    enum ViewOption { screensOnly = 1, editButtons = 2, largeKeyboard = 4 };
+    static constexpr int kViewOptionsMask = 7;
+    int getViewOptions() const noexcept { return viewOptions.load(); }
+    bool hasViewOption (ViewOption o) const noexcept { return (viewOptions.load() & o) != 0; }
+    void setViewOption (ViewOption o, bool on)
+    {
+        viewOptions = on ? (viewOptions.load() | o) : (viewOptions.load() & ~o);
+        ++layout;
+    }
 
     juce::RangedAudioParameter& masterParam (int slot) { return *slots[(size_t) slot].master; }
     juce::RangedAudioParameter& mainParam() { return *mainVolume; }
@@ -187,7 +203,7 @@ private:
     juce::CriticalSection slotsLock;   // message side: engines coming and going, state
     juce::CriticalSection engineLock;  // held briefly to swap what the audio thread sees
     std::atomic<int> numEngines { 1 }, layout { 0 };
-    std::atomic<int> midiMode { (int) MidiMode::selected }, selected { 0 }, viewLayout { (int) ViewLayout::tiled };
+    std::atomic<int> midiMode { (int) MidiMode::selected }, selected { 0 }, viewLayout { (int) ViewLayout::tiled }, viewOptions { 0 };
     std::atomic<bool> multiOut { false };
 
     double ratio = (double) FM1E_RATE / 44100.0;

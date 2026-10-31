@@ -4,10 +4,12 @@
 #include "PluginProcessor.h"
 #include "EngineView.h"
 #include "OutputMeter.h"
+#include "LibraryWindow.h"
 
 //==============================================================================
 // A minimal header (title, MENU, the main volume meter, ENGINES 1..8) over
-// the engines, laid out one of two ways (MENU > Layout):
+// the engines, laid out one of two ways (MENU > View, which also has what each
+// engine shows under its screen: EngineView.h):
 //
 //   Tiled   a grid that takes whatever shape gives the cells the most room:
 //           resize the window wide and four engines sit in a row, square and
@@ -71,6 +73,7 @@ private:
         void checkBounds (juce::Rectangle<int>&, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limits,
                           bool top, bool left, bool bottom, bool right) override;
         bool keepTabShape = false;
+        float cellW = fm1c::EngineView::kW, cellH = fm1c::EngineView::kH;
     };
 
     void timerCallback() override;
@@ -78,12 +81,19 @@ private:
     void layoutCells();
     void selectEngine (int slot);
     void markSelection();
-    bool tabbed() const { return proc.getViewLayout() == FM1CeptionProcessor::ViewLayout::tabbed; }
-    juce::Point<int> naturalSize (int engines) const;
+    /** Tabbed or Hardware: one engine at a time, under the tabs. */
+    bool tabbed() const { return proc.getViewLayout() != FM1CeptionProcessor::ViewLayout::tiled; }
+    bool hardware() const { return proc.getViewLayout() == FM1CeptionProcessor::ViewLayout::hardware; }
+    /** The window for these engines at the cells' current scale (or atLeast), fitted to the screen. */
+    juce::Point<int> naturalSize (int engines, float atLeast = 0.0f) const;
     float cellScale() const;
-    /** The tabbed window around its cell, and its height at a width with the cell filling it. */
+    /** A cell's design size with the layout and view options as they are. */
+    float cellW() const { return fm1c::EngineView::widthFor (hardware()); }
+    float cellH() const { return fm1c::EngineView::heightFor (proc.getViewOptions(), hardware()); }
+    /** The tabbed window around its cell, and its height at a width with a cell cellW x cellH
+        (in design units) filling it. */
     static juce::Point<int> tabbedChrome();
-    static int tabbedHeightFor (int width);
+    static int tabbedHeightFor (int width, float cellW, float cellH);
     void updateConstrainer();
 
     void showMainMenu();
@@ -99,8 +109,11 @@ private:
     /** The presets folder's tree (subfolders as submenus), each loading into the slot. */
     juce::PopupMenu presetsMenu (int slot, bool withFolderItem);
     void savePresetAs (int slot);
+    void showLibrary();
 
     FM1CeptionProcessor& proc;
+    juce::SharedResourcePointer<fm1c::SharedFirmwareLibrary> library;
+    std::unique_ptr<fm1c::LibraryWindow> libraryWindow;
     juce::LookAndFeel_V4 lnf;
     juce::TextButton menuButton { "MENU" };
     fm1c::OutputMeter meter;
@@ -111,7 +124,7 @@ private:
     juce::ScopedMessageBox confirmBox;
     juce::TooltipWindow tooltips { this, 700 };
     Constrainer constrainer;
-    int seenLayout = -1, seenEngines = -1, seenViewLayout = -1, seenSelected = -1;
+    int seenLayout = -1, seenEngines = -1, seenViewLayout = -1, seenViewOptions = -1, seenSelected = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FM1CeptionEditor)
 };

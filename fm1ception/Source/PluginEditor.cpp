@@ -160,7 +160,6 @@ FM1CeptionEditor::FM1CeptionEditor (FM1CeptionProcessor& p)
     addAndMakeVisible (engineCount);
     addChildComponent (tabs);
 
-    constrainer.setMinimumSize (kMinW, kHeaderH + 2 * kPad + juce::roundToInt (EngineView::kH * kMinCellScale));
     constrainer.setMaximumSize (8000, 6000);
     setConstrainer (&constrainer);
     setResizable (true, true);
@@ -169,7 +168,8 @@ FM1CeptionEditor::FM1CeptionEditor (FM1CeptionProcessor& p)
     const auto saved = proc.getEditorSize();
     auto size = saved.x > 0 && saved.y > 0 ? saved : naturalSize (proc.getNumEngines());
     if (tabbed())
-        size.y = tabbedHeightFor (size.x);
+        size.y = tabbedHeightFor (size.x, cellW(), cellH());
+    updateConstrainer();
     setSize (size.x, size.y);
     updateConstrainer();
 
@@ -179,6 +179,7 @@ FM1CeptionEditor::FM1CeptionEditor (FM1CeptionProcessor& p)
 FM1CeptionEditor::~FM1CeptionEditor()
 {
     stopTimer();
+    libraryWindow.reset();
     views.clear();
     setConstrainer (nullptr);
     setLookAndFeel (nullptr);
@@ -189,7 +190,7 @@ float FM1CeptionEditor::cellScale() const
 {
     if (views.isEmpty() || views[0]->getWidth() <= 0)
         return 1.0f;
-    return (float) views[0]->getWidth() / EngineView::kW;
+    return (float) views[0]->getWidth() / cellW();
 }
 
 juce::Point<int> FM1CeptionEditor::tabbedChrome()
@@ -197,10 +198,10 @@ juce::Point<int> FM1CeptionEditor::tabbedChrome()
     return { 2 * kPad, kHeaderH + kTabsH + 2 * kPad };
 }
 
-int FM1CeptionEditor::tabbedHeightFor (int width)
+int FM1CeptionEditor::tabbedHeightFor (int width, float cellW, float cellH)
 {
     const auto chrome = tabbedChrome();
-    return chrome.y + juce::roundToInt ((float) (width - chrome.x) * EngineView::kH / EngineView::kW);
+    return chrome.y + juce::roundToInt ((float) (width - chrome.x) * cellH / cellW);
 }
 
 void FM1CeptionEditor::Constrainer::checkBounds (juce::Rectangle<int>& b, const juce::Rectangle<int>& previous,
@@ -215,11 +216,11 @@ void FM1CeptionEditor::Constrainer::checkBounds (juce::Rectangle<int>& b, const 
         if ((top || bottom) && ! (left || right))
         {
             const auto chrome = tabbedChrome();
-            b.setWidth (chrome.x + juce::roundToInt ((float) (b.getHeight() - chrome.y) * EngineView::kW / EngineView::kH));
+            b.setWidth (chrome.x + juce::roundToInt ((float) (b.getHeight() - chrome.y) * cellW / cellH));
         }
         else
         {
-            b.setHeight (tabbedHeightFor (b.getWidth()));
+            b.setHeight (tabbedHeightFor (b.getWidth(), cellW, cellH));
         }
         if (left)
             b.setX (previous.getRight() - b.getWidth());
@@ -230,7 +231,7 @@ void FM1CeptionEditor::Constrainer::checkBounds (juce::Rectangle<int>& b, const 
     if (keepTabShape)
     {
         // a width clamped to the minimum takes the height with it
-        b.setHeight (tabbedHeightFor (b.getWidth()));
+        b.setHeight (tabbedHeightFor (b.getWidth(), cellW, cellH));
         if (top)
             b.setY (previous.getBottom() - b.getHeight());
     }
@@ -240,11 +241,14 @@ void FM1CeptionEditor::Constrainer::checkBounds (juce::Rectangle<int>& b, const 
 void FM1CeptionEditor::updateConstrainer()
 {
     constrainer.keepTabShape = tabbed();
+    constrainer.cellW = cellW();
+    constrainer.cellH = cellH();
+    constrainer.setMinimumSize (kMinW, kHeaderH + 2 * kPad + juce::roundToInt (cellH() * kMinCellScale));
     const int w = juce::jmax (kMinW, getWidth());
-    constrainer.setFixedAspectRatio (tabbed() ? (double) w / (double) tabbedHeightFor (w) : 0.0);
+    constrainer.setFixedAspectRatio (tabbed() ? (double) w / (double) tabbedHeightFor (w, cellW(), cellH()) : 0.0);
 }
 
-juce::Point<int> FM1CeptionEditor::naturalSize (int n) const
+juce::Point<int> FM1CeptionEditor::naturalSize (int n, float atLeast) const
 {
     const int cols = tabbed() ? 1 : juce::jmin (n, 4), rows = tabbed() ? 1 : (n + cols - 1) / cols;
     const int chromeW = (cols + 1) * kPad;
@@ -257,15 +261,15 @@ juce::Point<int> FM1CeptionEditor::naturalSize (int n) const
         area = primary->userBounds.toNearestInt();
 
     // the cells' current size (tabbed: the one cell as wide as the window is), shrunk to fit the screen
-    const float current = tabbed() && getWidth() > 0 ? ((float) getWidth() - (float) chromeW) / EngineView::kW : cellScale();
+    const float current = tabbed() && getWidth() > 0 ? ((float) getWidth() - (float) chromeW) / cellW() : cellScale();
     const float s = juce::jmax (kMinCellScale,
-                                juce::jmin (current,
-                                            ((float) area.getWidth() * 0.92f - (float) chromeW) / ((float) cols * EngineView::kW),
-                                            ((float) area.getHeight() * 0.9f - (float) chromeH) / ((float) rows * EngineView::kH)));
-    const int w = juce::jmax (kMinW, chromeW + juce::roundToInt ((float) cols * EngineView::kW * s));
+                                juce::jmin (juce::jmax (current, atLeast),
+                                            ((float) area.getWidth() * 0.92f - (float) chromeW) / ((float) cols * cellW()),
+                                            ((float) area.getHeight() * 0.9f - (float) chromeH) / ((float) rows * cellH())));
+    const int w = juce::jmax (kMinW, chromeW + juce::roundToInt ((float) cols * cellW() * s));
     if (tabbed())
-        return { w, tabbedHeightFor (w) };
-    return { w, chromeH + juce::roundToInt ((float) rows * EngineView::kH * s) };
+        return { w, tabbedHeightFor (w, cellW(), cellH()) };
+    return { w, chromeH + juce::roundToInt ((float) rows * cellH() * s) };
 }
 
 void FM1CeptionEditor::syncViews()
@@ -279,22 +283,36 @@ void FM1CeptionEditor::syncViews()
     {
         auto* v = views.add (new EngineView (proc, views.size()));
         v->onLoadRequest = [this] (int slot) { chooseFile (slot, false); };
+        v->onBrowseRequest = [this] (int slot)
+        {
+            selectEngine (slot);
+            showLibrary();
+        };
         v->onMenuRequest = [this] (int slot, int lcdRow) { showEngineMenu (slot, lcdRow); };
         v->onSelect = [this] (int slot) { selectEngine (slot); };
         addAndMakeVisible (v);
     }
+    const int options = proc.getViewOptions();
     for (auto* v : views)
+    {
         v->setEngine (proc.engine (v->slot()));
+        v->setViewOptions (options);
+        v->setHardware (hardware());
+    }
     engineCount.setCount (n);
 
-    const int viewLayout = (int) proc.getViewLayout();
-    const bool changed = (seenEngines >= 0 && n != seenEngines) || (seenViewLayout >= 0 && viewLayout != seenViewLayout);
+    const int viewLayout = (int) proc.getViewLayout(), wasViewLayout = seenViewLayout;
+    const bool changed = (seenEngines >= 0 && n != seenEngines) || (seenViewLayout >= 0 && viewLayout != seenViewLayout)
+                      || (seenViewOptions >= 0 && options != seenViewOptions);
     seenEngines = n;
     seenViewLayout = viewLayout;
+    seenViewOptions = options;
     tabs.setVisible (tabbed());
     if (changed)
     {
-        const auto size = naturalSize (n);
+        // the front panel is busy at the tabbed cell's size: come in at about 1000 wide
+        const bool intoHardware = hardware() && viewLayout != wasViewLayout;
+        const auto size = naturalSize (n, intoHardware ? 1.55f : 0.0f);
         setSize (size.x, size.y);
     }
     updateConstrainer();
@@ -331,8 +349,8 @@ void FM1CeptionEditor::layoutCells()
     {
         tabs.setBounds (content.removeFromTop (kTabsH));
         const auto area = content.reduced (kPad).toFloat();
-        const float s = juce::jmin (area.getWidth() / EngineView::kW, area.getHeight() / EngineView::kH);
-        const auto cell = juce::Rectangle<float> (std::floor (EngineView::kW * s), std::floor (EngineView::kH * s))
+        const float s = juce::jmin (area.getWidth() / cellW(), area.getHeight() / cellH());
+        const auto cell = juce::Rectangle<float> (std::floor (cellW() * s), std::floor (cellH() * s))
                               .withCentre (area.getCentre()).toNearestInt();
         const int sel = proc.getSelected();
         for (auto* v : views)
@@ -351,8 +369,8 @@ void FM1CeptionEditor::layoutCells()
     for (int c = 1; c <= n; ++c)
     {
         const int r = (n + c - 1) / c;
-        const float s = juce::jmin ((area.getWidth() - (float) (c - 1) * kPad) / ((float) c * EngineView::kW),
-                                    (area.getHeight() - (float) (r - 1) * kPad) / ((float) r * EngineView::kH));
+        const float s = juce::jmin ((area.getWidth() - (float) (c - 1) * kPad) / ((float) c * cellW()),
+                                    (area.getHeight() - (float) (r - 1) * kPad) / ((float) r * cellH()));
         if (s > best + 1.0e-4f)
         {
             best = s;
@@ -361,7 +379,7 @@ void FM1CeptionEditor::layoutCells()
     }
 
     const int cols = bestCols, rows = (n + cols - 1) / cols;
-    const float w = std::floor (EngineView::kW * best), h = std::floor (EngineView::kH * best);
+    const float w = std::floor (cellW() * best), h = std::floor (cellH() * best);
     const float gridH = (float) rows * h + (float) (rows - 1) * kPad;
     const float y0 = area.getY() + (area.getHeight() - gridH) * 0.5f;
 
@@ -626,6 +644,7 @@ void FM1CeptionEditor::showMainMenu()
     };
 
     perEngine ("Load Firmware", false, [] (FM1CeptionEditor& e, int i) { e.chooseFile (i, false); });
+    m.addItem ("Firmware Library...", [safe] { if (safe) safe->showLibrary(); });
     if (n == 1)
     {
         m.addSubMenu ("Presets", presetsMenu (0, true));
@@ -667,10 +686,25 @@ void FM1CeptionEditor::showMainMenu()
     }
 
     using Layout = FM1CeptionProcessor::ViewLayout;
-    juce::PopupMenu layout;
-    layout.addItem ("Tiled  -  every engine at once", true, ! tabbed(), [p = &proc] { p->setViewLayout (Layout::tiled); });
-    layout.addItem ("Tabbed  -  one engine at a time", true, tabbed(), [p = &proc] { p->setViewLayout (Layout::tabbed); });
-    m.addSubMenu (juce::String ("Layout  (") + (tabbed() ? "Tabbed" : "Tiled") + ")", layout);
+    using Option = FM1CeptionProcessor::ViewOption;
+    juce::PopupMenu view;
+    view.addSectionHeader ("Layout");
+    const auto layout = proc.getViewLayout();
+    view.addItem ("Tiled  -  every engine at once", true, layout == Layout::tiled, [p = &proc] { p->setViewLayout (Layout::tiled); });
+    view.addItem ("Tabbed  -  one engine at a time", true, layout == Layout::tabbed, [p = &proc] { p->setViewLayout (Layout::tabbed); });
+    view.addItem ("Hardware (Tabbed)  -  the FM-1's front panel, one engine at a time", true, layout == Layout::hardware,
+                  [p = &proc] { p->setViewLayout (Layout::hardware); });
+    view.addSeparator();
+    view.addSectionHeader (hardware() ? "Each Engine Shows  (not with Hardware)" : "Each Engine Shows");
+    auto option = [&view, p = &proc, panel = hardware()] (const juce::String& text, Option o)
+    {
+        const bool on = p->hasViewOption (o);
+        view.addItem (text, ! panel, on, [p, o, on] { p->setViewOption (o, ! on); });
+    };
+    option ("Screens Only  -  no knobs under the screen", Option::screensOnly);
+    option ("Edit Buttons Show  -  the panel buttons in a row of their own", Option::editButtons);
+    option ("Large Keyboard  -  the keys across the whole engine", Option::largeKeyboard);
+    m.addSubMenu (juce::String ("View  (") + (hardware() ? "Hardware" : tabbed() ? "Tabbed" : "Tiled") + ")", view);
 
     const bool multi = proc.isMultiOut();
     juce::PopupMenu outputs;
@@ -704,6 +738,7 @@ void FM1CeptionEditor::showEngineMenu (int slot, int lcdRow)
     juce::PopupMenu m;
     m.addSectionHeader (engineLabel (slot));
     m.addItem ("Load Firmware...", [safe, slot] { if (safe) safe->chooseFile (slot, false); });
+    m.addItem ("Firmware Library...", [safe] { if (safe) safe->showLibrary(); });
     m.addSubMenu ("Presets", presetsMenu (slot, true));
     m.addItem ("Save Preset (Machine State)...", loaded, false, [safe, slot] { if (safe) safe->savePresetAs (slot); });
     m.addItem ("Export Save...", loaded, false, [safe, slot] { if (safe) safe->chooseFile (slot, true); });
@@ -806,15 +841,37 @@ void FM1CeptionEditor::savePresetAs (int slot)
     });
 }
 
+void FM1CeptionEditor::showLibrary()
+{
+    if (libraryWindow == nullptr)
+    {
+        LibraryView::Engines engines;
+        engines.count = [this] { return proc.getNumEngines(); };
+        engines.selected = [this] { return proc.getSelected(); };
+        engines.label = [this] (int slot) { return engineLabel (slot); };
+        engines.load = [this] (int slot, const juce::File& file)
+        {
+            proc.loadFile (slot, file);
+            selectEngine (slot);
+        };
+        libraryWindow = std::make_unique<LibraryWindow> (library->library, &library->cloud, std::move (engines), &library->screens);
+    }
+    libraryWindow->show();
+}
+
 void FM1CeptionEditor::chooseFile (int slot, bool exporting)
 {
     juce::String name;
     if (auto h = proc.engine (slot))
         name = h->firmwareName();
 
+    // loading starts in the firmware library's folder (or where it was last, if that is in it)
+    auto loadFrom = lastFolder();
+    if (const auto root = library->library.getRoot(); root.isDirectory() && loadFrom != root && ! loadFrom.isAChildOf (root))
+        loadFrom = root;
     const auto start = exporting
         ? lastFolder().getChildFile (juce::File::createLegalFileName (name.isEmpty() ? "FM-1" : name) + ".fm1save")
-        : lastFolder();
+        : loadFrom;
     chooser = std::make_unique<juce::FileChooser> (
         exporting ? "Export engine " + juce::String (slot + 1) + " as a shared save"
                   : "Load a firmware into engine " + juce::String (slot + 1),
