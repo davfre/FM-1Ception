@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>FM-1Ception @LABEL@</title>
+    <license file="License.txt"/>
+
+    <options hostArchitectures="x86_64,arm64" customize="allow" require-scripts="false"/>
+    <domains enable_localSystem="true"/>
+
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="12.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <choices-outline>
+        <line choice="com.xferrecords.fm1ception.vst3.choice"/>
+        <line choice="com.xferrecords.fm1ception.au.choice"/>
+        <line choice="com.xferrecords.fm1ception.app.choice"/>
+    </choices-outline>
+
+    <choice id="com.xferrecords.fm1ception.vst3.choice" title="FM-1Ception VST3"
+        description="Install the VST3 plug-in to /Library/Audio/Plug-Ins/VST3.">
+        <pkg-ref id="com.xferrecords.fm1ception.vst3"/>
+    </choice>
+
+    <choice id="com.xferrecords.fm1ception.au.choice" title="FM-1Ception Audio Unit"
+        description="Install the Audio Unit to /Library/Audio/Plug-Ins/Components (Logic Pro, GarageBand, ...).">
+        <pkg-ref id="com.xferrecords.fm1ception.au"/>
+    </choice>
+
+    <choice id="com.xferrecords.fm1ception.app.choice" title="FM-1Ception Standalone"
+        description="Install the standalone app to /Applications.">
+        <pkg-ref id="com.xferrecords.fm1ception.app"/>
+    </choice>
+
+    <pkg-ref id="com.xferrecords.fm1ception.vst3">#com.xferrecords.fm1ception.vst3.pkg</pkg-ref>
+    <pkg-ref id="com.xferrecords.fm1ception.au">#com.xferrecords.fm1ception.au.pkg</pkg-ref>
+    <pkg-ref id="com.xferrecords.fm1ception.app">#com.xferrecords.fm1ception.app.pkg</pkg-ref>
+</installer-gui-script>

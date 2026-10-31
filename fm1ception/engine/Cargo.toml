@@ -1,0 +1,27 @@
+[package]
+name = "fm1ception-engine"
+description = "One emulated FM-1 per handle, on a thread of its own, behind a C ABI for the JUCE plug-in"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+fm1-core = { path = "../third_party/fm1-emu/crates/fm1-core" }
+fm1-soc = { path = "../third_party/fm1-emu/crates/fm1-soc", features = ["state"] }
+rtrb = "0.3"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+# Its own workspace, as upstream's plug-in crate is: the emulator's workspace stays untouched.
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

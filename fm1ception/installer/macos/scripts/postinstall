@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs after each component: keep the install folder readable by every user, drop any
+# quarantine flag, and make the Audio Unit cache pick up the new AU without a reboot.
+set -u
+
+DEST="${2:-/Library/Audio/Plug-Ins}"
+chmod go+rx "$DEST" 2>/dev/null || true
+
+for b in "$DEST"/FM-1Ception.vst3 "$DEST"/FM-1Ception.component "$DEST"/FM-1Ception.app; do
+    [ -d "$b" ] && xattr -dr com.apple.quarantine "$b" 2>/dev/null || true
+done
+
+killall -9 AudioComponentRegistrar 2>/dev/null || true
+exit 0
