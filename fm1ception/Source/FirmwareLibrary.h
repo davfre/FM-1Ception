@@ -85,6 +85,16 @@ public:
         std::pair<juce::String, juce::String> ownName() const;
     };
 
+    /** The category and sub category FM-1Ception gives a firmware of this name (CategoryPresets.cpp):
+        its lists' name, else its own. A firmware with none of its own gets it when first found, or
+        first described as one of those names. */
+    struct Preset
+    {
+        Category category = Category::none;
+        juce::String subcategory;
+    };
+    static std::optional<Preset> presetOf (const Item&);
+
     /** "Name 1.2.3", "name-1.2.3", "Name v1.2" as name and version ("" if there is none). */
     static std::pair<juce::String, juce::String> splitVersion (const juce::String&);
     /** Letters and digits, lower case: "FM-1 SID" and "fm1-sid" are one. */
@@ -165,7 +175,10 @@ private:
     struct Record : Item
     {
         bool found = false;
+        /** Its category was its preset, or the user's: a preset is not given it again. */
+        bool seeded = false;
     };
+    static bool seed (Record&);
     struct Seen
     {
         juce::int64 size = 0, modified = 0;

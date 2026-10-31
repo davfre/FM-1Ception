@@ -1,0 +1,37 @@
+FM-1Ception - Xfer Records
+
+This is a beta. Please report anything that goes wrong, with the firmware you were running.
+
+FM-1Ception ships with no firmware. Firmwares belong to their authors. FM-1 is a product of
+M-VAVE; FM-1Ception is not affiliated with or endorsed by M-VAVE.
+
+
+MIT License
+
+Copyright (c) 2026 Xfer Records
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Third-party software
+
+fm1-emu, the FM-1 emulator, by Joakim Eriksson: MIT License.
+https://github.com/joakimeriksson/fm1-emu
+
+JUCE, by Raw Material Software Limited: https://juce.com

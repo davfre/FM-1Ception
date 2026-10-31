@@ -102,16 +102,24 @@ if(APPLE)
         USES_TERMINAL
         VERBATIM)
 else()
+    set(_cargo_target)
     if(MSVC)
         # match the plugin's static runtime
         list(APPEND _cargo_env "RUSTFLAGS=-Ctarget-feature=+crt-static")
-        set(ENGINE_LIB "${CARGO_TARGET_DIR}/release/fm1ception_engine.lib")
+        # the plugin's architecture, not the build machine's (an x64 build on ARM64 Windows)
+        if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64")
+            set(_triple aarch64-pc-windows-msvc)
+        else()
+            set(_triple x86_64-pc-windows-msvc)
+        endif()
+        set(_cargo_target --target ${_triple})
+        set(ENGINE_LIB "${CARGO_TARGET_DIR}/${_triple}/release/fm1ception_engine.lib")
     else()
         set(ENGINE_LIB "${CARGO_TARGET_DIR}/release/libfm1ception_engine.a")
     endif()
     add_custom_target(fm1ception_engine_build
         COMMAND ${CMAKE_COMMAND} -E env ${_cargo_env}
-                ${CARGO} build --release --manifest-path ${ENGINE_CRATE}/Cargo.toml
+                ${CARGO} build --release --manifest-path ${ENGINE_CRATE}/Cargo.toml ${_cargo_target}
         BYPRODUCTS ${ENGINE_LIB}
         WORKING_DIRECTORY ${ENGINE_CRATE}
         COMMENT "Building the FM-1 engine (Rust)"
@@ -152,6 +160,8 @@ set(FM1C_SOURCES
     Source/CloudView.cpp
     Source/FirmwareLibrary.h
     Source/FirmwareLibrary.cpp
+    Source/CategoryPresets.h
+    Source/CategoryPresets.cpp
     Source/InfoPanel.h
     Source/InfoPanel.cpp
     Source/ScreenCache.h
@@ -248,6 +258,7 @@ if(FM1C_BUILD_TESTS)
         Source/CloudCatalog.cpp
         Source/CloudView.cpp
         Source/FirmwareLibrary.cpp
+        Source/CategoryPresets.cpp
         Source/InfoPanel.cpp
         Source/ScreenCache.cpp
         Source/LibraryWindow.cpp

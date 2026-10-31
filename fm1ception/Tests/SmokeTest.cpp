@@ -10,6 +10,7 @@
 
     Run: ./FM1CeptionTests [firmware.fwsc]   (exit code 0 = pass)
          ./FM1CeptionTests --snapshot DIR [firmware.fwsc]   (the editor as PNGs)
+         ./FM1CeptionTests --export-presets LIBRARY.json Source/CategoryPresets.cpp
 */
 
 #include <JuceHeader.h>
@@ -330,6 +331,90 @@ int snapshots (const juce::File& dir, const juce::File& fw)
     }
     return 0;
 }
+
+juce::String cString (const juce::String& s)
+{
+    juce::String out ("\"");
+    for (const char* p = s.toRawUTF8(); *p != 0; ++p)
+    {
+        const auto b = (unsigned char) *p;
+        if (b == '"' || b == '\\')
+            out << '\\' << (char) b;
+        else if (b < 0x20 || b >= 0x7f)
+            out << '\\' << (char) ('0' + (b >> 6)) << (char) ('0' + ((b >> 3) & 7)) << (char) ('0' + (b & 7));
+        else
+            out << (char) b;
+    }
+    return out + "\"";
+}
+
+/** CategoryPresets.cpp from a library's categories: each name its firmwares go by (the lists', their
+    own), with the category and sub category most of them have. */
+int exportPresets (const juce::File& db, const juce::File& out)
+{
+    juce::TemporaryFile copy (".json");
+    if (! db.existsAsFile() || ! db.copyFileTo (copy.getFile()))
+    {
+        std::cerr << "no library at " << db.getFullPathName() << std::endl;
+        return 1;
+    }
+    struct Votes
+    {
+        juce::String name;
+        std::map<std::pair<juce::String, juce::String>, int> counts;
+    };
+    std::map<juce::String, Votes> byKey;
+    int assigned = 0;
+    {
+        FirmwareLibrary lib (copy.getFile());
+        for (const auto& it : lib.items())
+        {
+            if (it.category == FirmwareLibrary::Category::none)
+                continue;
+            ++assigned;
+            for (const auto& name : { it.listing.name, it.ownName().first })
+                if (const auto key = FirmwareLibrary::normalise (name); key.isNotEmpty())
+                {
+                    auto& v = byKey[key];
+                    if (v.name.isEmpty())
+                        v.name = name;
+                    ++v.counts[{ FirmwareLibrary::categoryName (it.category), it.subcategory }];
+                }
+        }
+    }
+    std::vector<const Votes*> sorted;
+    for (const auto& [key, v] : byKey)
+        sorted.push_back (&v);
+    std::sort (sorted.begin(), sorted.end(), [] (const Votes* a, const Votes* b) { return a->name.compareNatural (b->name) < 0; });
+
+    juce::String text;
+    text << "// Written by ./FM1CeptionTests --export-presets (CategoryPresets.h): edit the library, not this.\n"
+         << "#include \"CategoryPresets.h\"\n\nnamespace fm1c\n{\nconst CategoryPreset kCategoryPresets[] {\n";
+    int split = 0;
+    for (const auto* v : sorted)
+    {
+        const auto best = std::max_element (v->counts.begin(), v->counts.end(),
+                                            [] (const auto& a, const auto& b) { return a.second < b.second; });
+        if (v->counts.size() > 1)
+        {
+            ++split;
+            std::cout << v->name << ":";
+            for (const auto& [as, n] : v->counts)
+                std::cout << " " << as.first << " / " << as.second << " (" << n << ")";
+            std::cout << std::endl;
+        }
+        text << "    { " << cString (v->name) << ", " << cString (best->first.first) << ", " << cString (best->first.second) << " },\n";
+    }
+    text << "};\nconst size_t kNumCategoryPresets = sizeof (kCategoryPresets) / sizeof (kCategoryPresets[0]);\n} // namespace fm1c\n";
+    if (! out.replaceWithText (text, false, false, "\n"))
+    {
+        std::cerr << "could not write " << out.getFullPathName() << std::endl;
+        return 1;
+    }
+    std::cout << sorted.size() << " names from " << assigned << " firmwares (" << split
+              << " with more than one assignment: most of theirs) to " << out.getFullPathName() << std::endl;
+    return 0;
+}
 } // namespace
 
 int main (int argc, char** argv)
@@ -337,6 +422,8 @@ int main (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI juceInit;
     FirmwareLibrary::useDatabase (juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("FirmwareLibrary.json"));
 
+    if (argc > 3 && juce::String (argv[1]) == "--export-presets")
+        return exportPresets (juce::File (juce::String::fromUTF8 (argv[2])), juce::File (juce::String::fromUTF8 (argv[3])));
     if (argc > 2 && juce::String (argv[1]) == "--snapshot")
         return snapshots (juce::File (juce::String::fromUTF8 (argv[2])), findFirmware (argc - 2, argv + 2));
 
@@ -549,6 +636,45 @@ int main (int argc, char** argv)
                 check (sorted && FirmwareLibrary::kCategories == 5 && FirmwareLibrary::categoryFromName ("Novelty") == Category::none
                            && FirmwareLibrary::subcategoriesOf (Category::misc).contains ("Novelty / Fun"),
                        "each category has sub categories A to Z, Novelty is one of Misc: " + all.joinIntoString ("; "));
+            }
+            {
+                const auto presets = tmp.getChildFile ("Presets"), presetDb = tmp.getChildFile ("presets.json");
+                const auto beetle = presets.getChildFile ("beetle-1.2.fwsc"), other = presets.getChildFile ("Nobody Knows 1.0.fwsc");
+                presets.createDirectory();
+                beetle.replaceWithText ("a beetle");
+                other.replaceWithText ("an omni");
+                bool seeded = false, described = false, kept = false;
+                {
+                    FirmwareLibrary pl (presetDb);
+                    pl.setRoot (presets);
+                    pl.waitForScan (30000);
+                    const auto b = itemFor (pl, beetle), o = itemFor (pl, other);
+                    seeded = b && b->category == Category::groovebox && b->subcategory == "Tracker" && o && o->category == Category::none;
+                    pl.setCategory (beetle, Category::none);
+                    pl.describe ([] (const FirmwareLibrary::Item& it)
+                    {
+                        FirmwareLibrary::Listing l;
+                        if (it.file.getFileName().startsWith ("Nobody"))
+                        {
+                            l.how = FirmwareLibrary::Listing::How::name;
+                            l.ref = "list:fomni";
+                            l.name = "FoMni";
+                        }
+                        return l;
+                    });
+                    const auto o2 = itemFor (pl, other);
+                    described = o2 && o2->category == Category::misc && o2->subcategory == "Chord"
+                             && itemFor (pl, beetle)->category == Category::none;
+                }
+                {
+                    FirmwareLibrary pl (presetDb);
+                    pl.rescan();
+                    pl.waitForScan (30000);
+                    kept = itemFor (pl, beetle).has_value() && itemFor (pl, beetle)->category == Category::none;
+                }
+                check (seeded && described && kept,
+                       "a firmware first found by a known name gets its preset (beetle: Groovebox / Tracker), one first "
+                       "described as one then, and one set back to none stays none");
             }
             lib.setCategory (junk, Category::none);
             lib.describe ([] (const FirmwareLibrary::Item&)

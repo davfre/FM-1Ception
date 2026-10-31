@@ -1,4 +1,5 @@
 #include "FirmwareLibrary.h"
+#include "CategoryPresets.h"
 #include "FirmwarePrefs.h"
 #include "fm1ception_engine.h"
 
@@ -81,6 +82,42 @@ const juce::StringArray& FirmwareLibrary::subcategoriesOf (Category c)
         case Category::none:      break;
     }
     return none;
+}
+
+std::optional<FirmwareLibrary::Preset> FirmwareLibrary::presetOf (const Item& it)
+{
+    static const auto byName = []
+    {
+        std::map<juce::String, Preset> m;
+        for (size_t i = 0; i < kNumCategoryPresets; ++i)
+        {
+            const auto& p = kCategoryPresets[i];
+            const auto c = categoryFromName (juce::String::fromUTF8 (p.category));
+            const auto sub = juce::String::fromUTF8 (p.subcategory);
+            if (c != Category::none)
+                m.emplace (normalise (juce::String::fromUTF8 (p.name)),
+                           Preset { c, subcategoriesOf (c).contains (sub) ? sub : juce::String() });
+        }
+        return m;
+    }();
+    for (const auto& name : { it.listing.name, it.ownName().first })
+        if (const auto key = normalise (name); key.isNotEmpty())
+            if (const auto f = byName.find (key); f != byName.end())
+                return f->second;
+    return std::nullopt;
+}
+
+bool FirmwareLibrary::seed (Record& r)
+{
+    if (r.seeded || r.category != Category::none)
+        return false;
+    const auto p = presetOf (r);
+    if (! p.has_value())
+        return false;
+    r.category = p->category;
+    r.subcategory = p->subcategory;
+    r.seeded = true;
+    return true;
 }
 
 FirmwareLibrary::Category FirmwareLibrary::categoryFromName (const juce::String& s)
@@ -277,6 +314,7 @@ void FirmwareLibrary::load()
                 r.category = Category::misc;
                 r.subcategory = "Novelty / Fun";
             }
+            r.seeded = e.getProperty ("seeded", false);
             r.rating = juce::jlimit (0, kMaxRating, (int) e["rating"]);
             r.url = e["url"].toString();
             r.isPackage = e.getProperty ("package", true);
@@ -326,6 +364,8 @@ void FirmwareLibrary::save()
             o->setProperty ("category", categoryName (r.category));
         if (r.subcategory.isNotEmpty())
             o->setProperty ("sub", r.subcategory);
+        if (r.seeded)
+            o->setProperty ("seeded", true);
         if (r.rating > 0)
             o->setProperty ("rating", r.rating);
         if (r.url.isNotEmpty())
@@ -530,6 +570,7 @@ void FirmwareLibrary::merge (const juce::File& scannedRoot, bool rootThere, std:
             rec.digest = s.probe.digest;
             rec.isPackage = s.probe.isPackage;
             rec.found = true;
+            seed (rec);
         }
         else if (rec.file.isAChildOf (scannedRoot) && ! rec.file.existsAsFile())
         {
@@ -573,9 +614,10 @@ void FirmwareLibrary::setCategory (const juce::File& f, Category c, const juce::
     const auto sub = subcategoriesOf (c).contains (subcategory) ? subcategory : juce::String();
     edit (f, [c, sub] (Record& r)
     {
-        const bool changed = r.category != c || r.subcategory != sub;
+        const bool changed = r.category != c || r.subcategory != sub || ! r.seeded;
         r.category = c;
         r.subcategory = sub;
+        r.seeded = true;
         return changed;
     });
 }
@@ -587,9 +629,10 @@ void FirmwareLibrary::setSubcategory (const juce::File& f, const juce::String& s
         const auto c = r.shownCategory();
         if (! subcategoriesOf (c).contains (subcategory))
             return std::exchange (r.subcategory, juce::String()).isNotEmpty();
-        const bool changed = r.category != c || r.subcategory != subcategory;
+        const bool changed = r.category != c || r.subcategory != subcategory || ! r.seeded;
         r.category = c;
         r.subcategory = subcategory;
+        r.seeded = true;
         return changed;
     });
 }
@@ -637,6 +680,7 @@ void FirmwareLibrary::adopt (const juce::File& f, const juce::String& cloudId, c
     r->cloudId = cloudId;
     if (r->url.isEmpty())
         r->url = url.trim();
+    seed (*r);
     markDirty();
     sendChangeMessage();
 }
@@ -646,13 +690,14 @@ void FirmwareLibrary::describe (const std::function<Listing (const Item&)>& list
     bool changed = false;
     for (auto& r : records)
     {
-        auto l = listingOf (r);
-        if (l == r.listing)
-            continue;
-        if (r.listing.how == Listing::How::none && r.url.isEmpty())
-            r.url = l.repo;
-        r.listing = std::move (l);
-        changed = true;
+        if (auto l = listingOf (r); l != r.listing)
+        {
+            if (r.listing.how == Listing::How::none && r.url.isEmpty())
+                r.url = l.repo;
+            r.listing = std::move (l);
+            changed = true;
+        }
+        changed = seed (r) || changed;
     }
     if (changed)
     {
