@@ -23,7 +23,7 @@
 
 #define AppName      "FM-1Ception"
 #define Publisher    "Xfer Records"
-#define PublisherURL "https://github.com/stevexfer/FM1Ception"
+#define PublisherURL "https://github.com/stevexfer/FM-1Ception"
 
 [Setup]
 AppId={{6C0B6E8E-3F5A-4C1B-9B7E-2F1D4A8C9E31}
