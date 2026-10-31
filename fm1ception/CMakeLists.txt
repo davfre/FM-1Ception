@@ -216,6 +216,14 @@ juce_add_plugin(FM1Ception
     HARDENED_RUNTIME_OPTIONS com.apple.security.cs.allow-jit
 )
 
+# JUCE signs the VST3 before it writes moduleinfo.json into the bundle, which leaves the
+# seal invalid, and hosts (Live) refuse the plugin. Seal it again once the manifest is in.
+if(APPLE AND FM1C_VST3_AUTO_MANIFEST AND NOT CMAKE_GENERATOR STREQUAL "Xcode")
+    add_custom_command(TARGET FM1Ception_VST3 POST_BUILD
+        COMMAND codesign --force --sign - "$<TARGET_BUNDLE_DIR:FM1Ception_VST3>"
+        VERBATIM)
+endif()
+
 juce_generate_juce_header(FM1Ception)
 
 target_compile_features(FM1Ception PRIVATE cxx_std_20)
