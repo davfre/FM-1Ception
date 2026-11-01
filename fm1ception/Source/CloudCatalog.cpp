@@ -1,5 +1,7 @@
 #include "CloudCatalog.h"
 #include "fm1ception_engine.h"
+#include <cstring>
+#include <optional>
 #include <set>
 
 namespace fm1c
@@ -33,6 +35,233 @@ bool isBase64Char (juce::juce_wchar c)
 {
     return juce::CharacterFunctions::isLetterOrDigit (c) || c == '+' || c == '/' || c == '=';
 }
+
+juce::String textOf (const juce::var& x)
+{
+    return x.isString() || x.isInt() || x.isInt64() || x.isDouble() ? x.toString().trim() : juce::String();
+}
+
+/** A project's page as one key: "owner/name" for GitHub's, else the URL, lower case. */
+juce::String repoKey (const juce::String& url)
+{
+    auto s = url.trim().toLowerCase();
+    s = s.fromFirstOccurrenceOf ("://", false, false).isNotEmpty() ? s.fromFirstOccurrenceOf ("://", false, false) : s;
+    if (s.startsWith ("www."))
+        s = s.substring (4);
+    if (s.startsWith ("github.com/"))
+        s = s.substring (11);
+    while (s.endsWith ("/"))
+        s = s.dropLastCharacters (1);
+    if (s.endsWith (".git"))
+        s = s.dropLastCharacters (4);
+    return s;
+}
+
+bool readEmu (const juce::var& v, std::vector<CloudCatalog::Entry>& out)
+{
+    const auto* firmwares = v["firmwares"].getArray();
+    if (firmwares == nullptr)
+        return false;
+    std::set<juce::String> keys;
+    for (const auto& e : *firmwares)
+    {
+        if (! e.isObject())
+            continue;
+        auto text = [&e] (const char* name) { return e[name].isString() ? e[name].toString().trim() : juce::String(); };
+        CloudCatalog::Entry x;
+        x.id = text ("id");
+        x.name = text ("name");
+        x.version = text ("version");
+        x.author = text ("author");
+        x.license = text ("license");
+        x.about = text ("about");
+        x.repo = text ("repo");
+        x.installer = text ("installer");
+        x.hub = text ("hub");
+        x.embedded = text ("embedded");
+        x.bringYourOwn = (bool) e.getProperty ("byo", false);
+        x.stock = x.bringYourOwn;
+        x.package = text ("package");
+        if (x.package.isEmpty())
+            x.package = text ("download");
+        if (x.id.isEmpty() || x.name.isEmpty() || ! keys.insert (x.key()).second)
+            continue;
+        out.push_back (std::move (x));
+    }
+    return true;
+}
+
+/** mutant.cloud's firmware.json: its firmwares for the FM-1, an entry for each package the FM-1
+    takes in its release (M-VAVE's stock firmware among another's not one). */
+bool readMutant (const juce::var& v, std::vector<CloudCatalog::Entry>& out)
+{
+    const auto* entries = v["entries"].getArray();
+    if (entries == nullptr)
+        return false;
+    std::map<juce::String, juce::String> baseNames, nameById;
+    std::set<juce::String> baseRepos, stockProducts;
+    if (const auto* bases = v["bases"].getDynamicObject())
+        for (const auto& [key, b] : bases->getProperties())
+        {
+            baseNames[key.toString()] = textOf (b["name"]);
+            if (const auto r = textOf (b["repo"]); r.isNotEmpty())
+                baseRepos.insert (repoKey (r));
+        }
+    auto fwscOf = [] (const juce::var& e)
+    {
+        std::vector<juce::var> fwsc;
+        if (const auto* assets = e["release"]["assets"].getArray())
+            for (const auto& a : *assets)
+                if (textOf (a["name"]).endsWithIgnoreCase (FirmwareLibrary::kSuffix) && textOf (a["url"]).isNotEmpty())
+                    fwsc.push_back (a);
+        return fwsc;
+    };
+    for (const auto& e : *entries)
+    {
+        nameById[textOf (e["id"])] = textOf (e["name"]);
+        if ((bool) e.getProperty ("stock", false))
+            for (const auto& a : fwscOf (e))
+                stockProducts.insert (textOf (a["product"]));
+    }
+
+    std::set<juce::String> keys;
+    for (const auto& e : *entries)
+    {
+        if (textOf (e["kind"]) != "firmware")
+            continue;
+        const auto* devices = e["devices"].getArray();
+        if (devices == nullptr || ! devices->contains ("fm1"))
+            continue;
+        CloudCatalog::Entry x;
+        x.id = textOf (e["id"]);
+        x.name = textOf (e["name"]);
+        if (x.id.isEmpty() || x.name.isEmpty())
+            continue;
+        x.current = true;
+        x.stock = e.getProperty ("stock", false);
+        x.author = textOf (e["author"]);
+        x.license = textOf (e["license"]);
+        x.about = textOf (e["description"]);
+        if (const auto r = textOf (e["repo"]); r.isNotEmpty())
+            x.repo = r.contains ("://") ? r : "https://github.com/" + r;
+        x.homepage = textOf (e["homepage"]);
+        if (const auto* tags = e["tags"].getArray())
+            for (const auto& t : *tags)
+                x.tags.addIfNotAlreadyThere (textOf (t));
+        x.tags.removeEmptyStrings();
+        if (const auto primary = textOf (e["primaryTag"]); primary.isNotEmpty())
+        {
+            x.tags.removeString (primary);
+            x.tags.insert (0, primary);
+        }
+        if (! x.tags.isEmpty())
+            x.category = FirmwareLibrary::categoryFromName (x.tags[0]);
+        x.isBase = x.repo.isNotEmpty() && baseRepos.count (repoKey (x.repo)) != 0;
+        if (const auto base = textOf (e["base"]); base.isNotEmpty() && base != "original")
+        {
+            x.base = baseNames[base].isNotEmpty() ? baseNames[base] : nameById[base].isNotEmpty() ? nameById[base] : base;
+            if (FirmwareLibrary::normalise (x.base) == FirmwareLibrary::normalise (x.name))
+                x.base = {};
+        }
+        x.card = textOf (e["card"]);
+        if (x.card.isEmpty() && ! (bool) e.getProperty ("coverIsScreen", false))
+            x.card = textOf (e["cover"]);
+        if (x.card.isEmpty())
+            x.card = textOf (e["image"]);
+        if (const auto* links = e["links"].getArray())
+            for (const auto& l : *links)
+                if (const auto label = textOf (l["label"]), url = textOf (l["url"]); label.isNotEmpty() && url.isNotEmpty())
+                    x.links.push_back ({ label, url });
+        for (const auto& [label, url] : x.links)
+            if (label.containsIgnoreCase ("install") && x.installer.isEmpty())
+                x.installer = url;
+        const auto& release = e["release"];
+        x.beta = (bool) e.getProperty ("beta", false) || (bool) release.getProperty ("prerelease", false);
+        x.archived = e.getProperty ("archived", false);
+        x.version = textOf (release["version"]);
+        if (x.version.length() > 1 && (x.version[0] == 'v' || x.version[0] == 'V') && juce::CharacterFunctions::isDigit (x.version[1]))
+            x.version = x.version.substring (1);
+        x.date = textOf (release["date"]);
+
+        // the FM-1's packages: by their product's name, else not the SMK-37's by their file's
+        std::vector<juce::var> fm1;
+        for (const auto& a : fwscOf (e))
+        {
+            const auto product = textOf (a["product"]);
+            const auto file = textOf (a["name"]).toLowerCase();
+            const bool forFm1 = product.isNotEmpty() ? product.startsWith ("FM-1_")
+                                                     : ! (file.contains ("smk37") || file.contains ("smk-37") || file.contains ("mke") || file.contains ("elite"));
+            if (forFm1 && ((bool) e.getProperty ("stock", false) || stockProducts.count (product) == 0))
+                fm1.push_back (a);
+        }
+
+        auto add = [&out, &keys] (CloudCatalog::Entry&& entry)
+        {
+            if (keys.insert (entry.key()).second)
+                out.push_back (std::move (entry));
+        };
+        if (fm1.empty())
+        {
+            add (std::move (x));
+            continue;
+        }
+
+        // which each is: what its file's name says beyond the firmware's own and its version
+        juce::StringArray own;
+        own.addTokens (x.id + " " + x.name, " -_", {});
+        for (auto& w : own)
+            w = FirmwareLibrary::normalise (w);
+        own.add (FirmwareLibrary::normalise (x.id));
+        own.add (FirmwareLibrary::normalise (x.name));
+        own.add ("fm1");
+        own.removeEmptyStrings();
+        struct Package
+        {
+            juce::var asset;
+            juce::String label;
+            bool versioned;
+        };
+        std::vector<Package> packages;
+        for (const auto& a : fm1)
+        {
+            const auto file = textOf (a["name"]);
+            auto stem = file.dropLastCharacters ((int) std::strlen (FirmwareLibrary::kSuffix));
+            const bool versioned = x.version.isNotEmpty() && stem.contains (x.version);
+            if (x.version.isNotEmpty())
+                stem = stem.replace ("v" + x.version, "").replace (x.version, "");
+            juce::StringArray words;
+            words.addTokens (stem, " -_", {});
+            words.removeEmptyStrings();
+            juce::StringArray kept;
+            for (const auto& w : words)
+            {
+                const auto n = FirmwareLibrary::normalise (w);
+                if (n.isNotEmpty() && ! own.contains (n)
+                    && ! (n.length() >= 3 && (FirmwareLibrary::normalise (x.id).contains (n) || FirmwareLibrary::normalise (x.name).contains (n))))
+                    kept.add (w);
+            }
+            const auto label = fm1.size() > 1 ? kept.joinIntoString ("-") : juce::String();
+            const auto same = std::find_if (packages.begin(), packages.end(), [&label] (const Package& p) { return p.label == label; });
+            if (same == packages.end())
+                packages.push_back ({ a, label, versioned });
+            else if (versioned && ! same->versioned)
+                *same = { a, label, versioned };
+        }
+        for (const auto& p : packages)
+        {
+            auto y = x;
+            y.package = textOf (p.asset["url"]);
+            y.sha256 = textOf (p.asset["sha256"]).toLowerCase();
+            if (p.label.isNotEmpty())
+            {
+                y.id = x.id + "/" + FirmwareLibrary::normalise (p.label);
+                y.name = x.name + " (" + p.label + ")";
+            }
+            add (std::move (y));
+        }
+    }
+    return true;
+}
 } // namespace
 
 //==============================================================================
@@ -60,36 +289,10 @@ bool CloudCatalog::parse (const juce::String& json, std::vector<Entry>& out, juc
         error = "The list is not JSON" + (r.failed() ? ": " + r.getErrorMessage() : juce::String());
         return false;
     }
-    const auto* firmwares = v["firmwares"].getArray();
-    if (firmwares == nullptr)
+    if (! readMutant (v, out) && ! readEmu (v, out))
     {
         error = "The list has no firmwares in it";
         return false;
-    }
-    std::set<juce::String> keys;
-    for (const auto& e : *firmwares)
-    {
-        if (! e.isObject())
-            continue;
-        auto text = [&e] (const char* name) { return e[name].isString() ? e[name].toString().trim() : juce::String(); };
-        Entry x;
-        x.id = text ("id");
-        x.name = text ("name");
-        x.version = text ("version");
-        x.author = text ("author");
-        x.license = text ("license");
-        x.about = text ("about");
-        x.repo = text ("repo");
-        x.installer = text ("installer");
-        x.hub = text ("hub");
-        x.embedded = text ("embedded");
-        x.bringYourOwn = (bool) e.getProperty ("byo", false);
-        x.package = text ("package");
-        if (x.package.isEmpty())
-            x.package = text ("download");
-        if (x.id.isEmpty() || x.name.isEmpty() || ! keys.insert (x.key()).second)
-            continue;
-        out.push_back (std::move (x));
     }
     if (out.empty())
     {
@@ -138,11 +341,76 @@ bool CloudCatalog::parseHub (const juce::String& json, const juce::URL& at, HubI
     return true;
 }
 
+std::vector<CloudCatalog::Entry> CloudCatalog::merge (std::vector<std::vector<Entry>> sources)
+{
+    std::vector<Entry> out;
+    std::set<juce::String> keys;
+    std::map<juce::String, size_t> byRepo, byName;
+    std::optional<size_t> stockAt;
+    for (size_t n = 0; n < sources.size(); ++n)
+    {
+        const auto before = out.size();
+        for (auto& e : sources[n])
+        {
+            if (n > 0)
+            {
+                std::optional<size_t> match;
+                if (e.stock && stockAt.has_value())
+                    match = stockAt;
+                else if (const auto r = byRepo.find (repoKey (e.repo)); r != byRepo.end())
+                    match = r->second;
+                else if (const auto byN = byName.find (FirmwareLibrary::normalise (e.name)); byN != byName.end())
+                    match = byN->second;
+                if (match.has_value())
+                {
+                    auto& to = out[*match];
+                    if (! to.downloadable() && e.downloadable())
+                    {
+                        to.package = e.package;
+                        to.embedded = e.embedded;
+                        if (e.installer.isNotEmpty())
+                            to.installer = e.installer;
+                        to.version = e.version;
+                        to.sha256 = e.sha256;
+                        to.bringYourOwn = e.bringYourOwn;
+                        to.current = false;
+                        keys.insert (to.key());
+                    }
+                    for (auto [field, from] : { std::pair { &to.hub, &e.hub }, { &to.author, &e.author }, { &to.about, &e.about },
+                                                { &to.license, &e.license }, { &to.repo, &e.repo } })
+                        if (field->isEmpty())
+                            *field = *from;
+                    continue;
+                }
+            }
+            if (keys.insert (e.key()).second)
+                out.push_back (std::move (e));
+        }
+        // a list's own entries are never one another's: only what came before is matched
+        for (auto i = before; i < out.size(); ++i)
+        {
+            if (const auto r = repoKey (out[i].repo); r.isNotEmpty())
+                byRepo.emplace (r, i);
+            byName.emplace (FirmwareLibrary::normalise (out[i].name), i);
+            if (out[i].stock && ! stockAt.has_value())
+                stockAt = i;
+        }
+    }
+    return out;
+}
+
 void CloudCatalog::applyHub (std::vector<Entry>& entries, const HubIndex& index)
 {
+    std::map<juce::String, juce::String> byRepo;
+    for (const auto& [id, p] : index)
+        if (const auto r = repoKey (p.repo); r.isNotEmpty())
+            byRepo.emplace (r, id);
     for (auto& e : entries)
     {
         if (e.hub.isEmpty())
+            if (const auto h = byRepo.find (repoKey (e.repo)); h != byRepo.end() && repoKey (e.repo).isNotEmpty())
+                e.hub = h->second;
+        if (e.hub.isEmpty() || (e.current && e.package.isNotEmpty()))
             continue;
         const auto it = index.find (e.hub);
         if (it == index.end() || it->second.url.isEmpty())
@@ -237,8 +505,8 @@ juce::StringArray CloudCatalog::scriptsIn (const juce::String& text)
 }
 
 //==============================================================================
-CloudCatalog::CloudCatalog (FirmwareLibrary& lib, juce::File c, juce::URL l, juce::URL h)
-    : library (lib), cache (std::move (c)), source (std::move (l)), hubSource (std::move (h))
+CloudCatalog::CloudCatalog (FirmwareLibrary& lib, juce::File c, std::vector<juce::URL> l, juce::URL h)
+    : library (lib), cache (std::move (c)), sources (std::move (l)), hubSource (std::move (h)), lists (sources.size())
 {
     loadCache();
     reindex();
@@ -254,6 +522,11 @@ CloudCatalog::~CloudCatalog()
     library.removeChangeListener (this);
 }
 
+juce::File CloudCatalog::cacheOf (size_t index) const
+{
+    return index == 0 ? cache : cache.getSiblingFile (cache.getFileNameWithoutExtension() + "-" + juce::String ((int) index + 1) + ".json");
+}
+
 void CloudCatalog::loadCache()
 {
     if (! cache.existsAsFile())
@@ -261,13 +534,18 @@ void CloudCatalog::loadCache()
     juce::String error;
     if (! hubSource.isEmpty() && hubCache().existsAsFile())
         parseHub (hubCache().loadFileAsString(), hubSource, hubIndex, error);
-    std::vector<Entry> parsed;
-    if (parse (cache.loadFileAsString(), parsed, error))
-    {
-        applyHub (parsed, hubIndex);
-        list = std::move (parsed);
+    for (size_t i = 0; i < sources.size(); ++i)
+        if (cacheOf (i).existsAsFile())
+            parse (cacheOf (i).loadFileAsString(), lists[i], error);
+    remerge (hubIndex);
+    if (! list.empty())
         fetched = cache.getLastModificationTime();
-    }
+}
+
+void CloudCatalog::remerge (const HubIndex& hub)
+{
+    list = merge (lists);
+    applyHub (list, hub);
 }
 
 const CloudCatalog::Entry* CloudCatalog::find (const juce::String& key) const
@@ -283,7 +561,7 @@ bool CloudCatalog::fetchable (const juce::String& url) const
     if (url.startsWithIgnoreCase ("https://") || url.startsWithIgnoreCase ("http://"))
         return true;
     // a list on disk (a test's) may point at packages on disk; one from the network may not
-    return source.isLocalFile() && url.startsWithIgnoreCase ("file://");
+    return ! sources.empty() && sources.front().isLocalFile() && url.startsWithIgnoreCase ("file://");
 }
 
 juce::String CloudCatalog::fetch (const juce::URL& url, juce::MemoryBlock& out, size_t maxBytes, const std::atomic<bool>& quit)
@@ -332,6 +610,8 @@ juce::String CloudCatalog::digestOf (const Entry& e)
 
 juce::String CloudCatalog::cardOf (const Entry& e) const
 {
+    if (e.card.isNotEmpty())
+        return e.card;
     const auto it = hubIndex.find (e.hub);
     return it != hubIndex.end() ? it->second.card : juce::String();
 }
@@ -498,18 +778,24 @@ void CloudCatalog::refresh()
     fetchedThisRun = true;
     ++inFlight;
     sendChangeMessage();
-    pool.addJob ([this, url = source, hubUrl = hubSource]
+    pool.addJob ([this, urls = sources, hubUrl = hubSource]
     {
-        juce::MemoryBlock bytes, hubBytes;
-        auto error = fetch (url, bytes, kMaxList, quitting);
+        std::vector<Fetched> got;
+        for (const auto& url : urls)
+        {
+            juce::MemoryBlock bytes;
+            auto error = fetch (url, bytes, kMaxList, quitting);
+            got.push_back ({ bytes.toString(), std::move (error) });
+        }
+        juce::MemoryBlock hubBytes;
         juce::String hubFetchError;
         if (! hubUrl.isEmpty())
             hubFetchError = fetch (hubUrl, hubBytes, kMaxHub, quitting);
-        post ([this, json = bytes.toString(), error, hubJson = hubBytes.toString(), hubFetchError]
+        post ([this, results = std::move (got), hubJson = hubBytes.toString(), hubFetchError]
         {
             --inFlight;
             fetching = false;
-            fetchError = error;
+            fetchError = results.empty() ? juce::String() : results.front().error;
             hubError = hubFetchError;
             HubIndex index;
             juce::String hubParseError;
@@ -524,8 +810,7 @@ void CloudCatalog::refresh()
             {
                 hubError = hubParseError;
             }
-            if (error.isEmpty())
-                takeList (json, hubRead ? &hubIndex : nullptr);
+            takeLists (results, hubRead ? &hubIndex : nullptr);
             sendChangeMessage();
         });
     });
@@ -548,11 +833,8 @@ void CloudCatalog::keepHub() const
         o->setProperty ("repo", p.repo);
         if (p.card.isNotEmpty())
             o->setProperty ("card", p.card);
-        const char* const kinds[] { "synth", "groove", "ambient", "game", "other" };
         if (p.category != FirmwareLibrary::Category::none)
-            o->setProperty ("kind", kinds[(int) p.category]);
-        if (p.category == FirmwareLibrary::Category::ambience)
-            o->setProperty ("ambient", true);
+            o->setProperty ("kind", FirmwareLibrary::categoryName (p.category).toLowerCase());
         kept.add (juce::var (o));
     }
     auto* top = new juce::DynamicObject();
@@ -567,20 +849,31 @@ void CloudCatalog::refreshOnce()
         refresh();
 }
 
-void CloudCatalog::takeList (const juce::String& json, const HubIndex* hub)
+void CloudCatalog::takeLists (const std::vector<Fetched>& got, const HubIndex* hub)
 {
-    std::vector<Entry> parsed;
-    juce::String error;
-    if (! parse (json, parsed, error))
+    bool any = false;
+    for (size_t i = 0; i < got.size() && i < lists.size(); ++i)
     {
-        fetchError = error;
-        return;
+        if (got[i].error.isNotEmpty())
+            continue;
+        std::vector<Entry> parsed;
+        juce::String error;
+        if (! parse (got[i].json, parsed, error))
+        {
+            if (i == 0)
+                fetchError = error;
+            continue;
+        }
+        lists[i] = std::move (parsed);
+        if (cacheOf (i).getParentDirectory().createDirectory())
+            cacheOf (i).replaceWithText (got[i].json);
+        if (i == 0)
+            fetched = juce::Time::getCurrentTime();
+        any = true;
     }
-    applyHub (parsed, hub != nullptr ? *hub : hubIndex);
-    list = std::move (parsed);
-    fetched = juce::Time::getCurrentTime();
-    if (cache.getParentDirectory().createDirectory())
-        cache.replaceWithText (json);
+    if (! any && hub == nullptr)
+        return;
+    remerge (hub != nullptr ? *hub : hubIndex);
     reindex();
     describeLibrary();
 }
@@ -597,35 +890,33 @@ FirmwareLibrary::Category CloudCatalog::categoryOfKind (const juce::String& kind
 {
     using C = FirmwareLibrary::Category;
     if (ambient || kind.equalsIgnoreCase ("ambient"))
-        return C::ambience;
-    if (kind.equalsIgnoreCase ("synth") || kind.equalsIgnoreCase ("chords"))
-        return C::synth;
-    if (kind.equalsIgnoreCase ("groove") || kind.equalsIgnoreCase ("drums") || kind.equalsIgnoreCase ("tracker"))
+        return C::generative;
+    if (kind.equalsIgnoreCase ("groove"))
         return C::groovebox;
-    if (kind.equalsIgnoreCase ("game"))
-        return C::game;
-    if (kind.isNotEmpty())
-        return C::misc;
-    return C::none;
+    if (const auto c = FirmwareLibrary::categoryFromName (kind); c != C::none)
+        return c;
+    return kind.isNotEmpty() ? C::utility : C::none;
 }
 
 void CloudCatalog::rebuildNames()
 {
     entryById.clear();
     entryByHub.clear();
-    hubBySha.clear();
+    refBySha.clear();
     nameRefs.clear();
     for (size_t i = 0; i < list.size(); ++i)
     {
         entryById.emplace (list[i].id, i);
         if (list[i].hub.isNotEmpty())
             entryByHub.emplace (list[i].hub, i);
+        if (const auto d = digestOf (list[i]); d.isNotEmpty())
+            refBySha.emplace (d, "list:" + list[i].id);
         nameRefs.emplace (FirmwareLibrary::normalise (list[i].name), "list:" + list[i].id);
     }
     for (const auto& [id, p] : hubIndex)
     {
         if (p.sha256.length() >= 32)
-            hubBySha.emplace (p.sha256.substring (0, 32), id);
+            refBySha.emplace (p.sha256.substring (0, 32), "hub:" + id);
         nameRefs.emplace (FirmwareLibrary::normalise (p.name), "hub:" + id);
     }
     nameRefs.erase (juce::String());
@@ -640,8 +931,12 @@ FirmwareLibrary::Listing CloudCatalog::listingOf (const Entry& e) const
     l.author = e.author;
     l.about = e.about;
     l.repo = e.repo;
-    if (const auto it = hubIndex.find (e.hub); it != hubIndex.end())
+    l.category = e.category;
+    if (const auto it = hubIndex.find (e.hub); it != hubIndex.end() && l.category == FirmwareLibrary::Category::none)
         l.category = it->second.category;
+    l.tags = e.tags;
+    l.base = e.base;
+    l.isBase = e.isBase;
     return l;
 }
 
@@ -672,12 +967,21 @@ FirmwareLibrary::Listing CloudCatalog::describe (const FirmwareLibrary::Item& it
             return l;
         }
     if (it.digest.length() >= 32)
-        if (const auto h = hubBySha.find (it.digest.toLowerCase().substring (0, 32)); h != hubBySha.end())
+        if (const auto h = refBySha.find (it.digest.toLowerCase().substring (0, 32)); h != refBySha.end())
         {
-            const auto& p = hubIndex.at (h->second);
-            auto l = listingOf (h->second, p);
+            const auto id = h->second.fromFirstOccurrenceOf (":", false, false);
+            FirmwareLibrary::Listing l;
+            if (h->second.startsWith ("list:"))
+            {
+                l = listingOf (list[entryById.at (id)]);
+            }
+            else
+            {
+                const auto& p = hubIndex.at (id);
+                l = listingOf (id, p);
+                l.version = p.version;
+            }
             l.how = How::checksum;
-            l.version = p.version;
             return l;
         }
 
@@ -808,7 +1112,7 @@ void CloudCatalog::download (const Entry& e, Done then)
         const auto target = folder.getChildFile (as.fileName());
         if (error.isEmpty() && got.sha256.length() >= 32
             && ! packageDigest (got.bytes).equalsIgnoreCase (got.sha256.substring (0, 32)))
-            error = "What " + hostOf (juce::URL (got.url)) + " sent is not the package the Hub lists (its checksum differs)";
+            error = "What " + hostOf (juce::URL (got.url)) + " sent is not the package its list names (its checksum differs)";
         if (error.isEmpty())
         {
             juce::TemporaryFile tmp (target);

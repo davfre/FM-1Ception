@@ -7,7 +7,8 @@ namespace fm1c
 {
 namespace
 {
-const char* const kCategoryNames[FirmwareLibrary::kCategories] { "Synth", "Groovebox", "Ambience", "Game", "Misc" };
+const char* const kCategoryNames[FirmwareLibrary::kCategories] { "Synth", "Groovebox", "Drums", "Sampler", "Tracker", "Chords",
+                                                                 "Generative", "Game", "MIDI", "Experimental", "Utility" };
 constexpr int kVersion = 1;
 } // namespace
 
@@ -67,21 +68,51 @@ juce::String FirmwareLibrary::categoryName (Category c)
 const juce::StringArray& FirmwareLibrary::subcategoriesOf (Category c)
 {
     static const juce::StringArray synth { "FM", "Inst / Sample", "Model / Vocal", "Modern / WT", "Multi Engine", "Organic / Pad", "VA / Retro" };
-    static const juce::StringArray groovebox { "Arranger", "Drum Machine", "Four-Part XOX", "Tracker", "Workstation" };
-    static const juce::StringArray ambience { "Generative", "Instrument" };
-    static const juce::StringArray game { "Classic", "Music Game", "NES", "Original" };
-    static const juce::StringArray misc { "Chord", "Educational", "Novelty / Fun", "Sequencer", "Utility / USB" };
+    static const juce::StringArray groovebox { "Arranger", "Four-Part XOX", "Workstation" };
+    static const juce::StringArray generative { "Ambient", "Instrument" };
+    static const juce::StringArray game { "Classic", "Educational", "Music Game", "NES", "Novelty / Fun", "Original" };
     static const juce::StringArray none;
     switch (c)
     {
-        case Category::synth:     return synth;
-        case Category::groovebox: return groovebox;
-        case Category::ambience:  return ambience;
-        case Category::game:      return game;
-        case Category::misc:      return misc;
-        case Category::none:      break;
+        case Category::synth:      return synth;
+        case Category::groovebox:  return groovebox;
+        case Category::generative: return generative;
+        case Category::game:       return game;
+        case Category::none:
+        case Category::drums:
+        case Category::sampler:
+        case Category::tracker:
+        case Category::chords:
+        case Category::midi:
+        case Category::experimental:
+        case Category::utility:    break;
     }
     return none;
+}
+
+FirmwareLibrary::Preset FirmwareLibrary::upgradeCategory (const juce::String& category, const juce::String& sub)
+{
+    auto is = [&category] (const char* name) { return category.equalsIgnoreCase (name); };
+    auto as = [] (Category c, const juce::String& s = {}) { return Preset { c, subcategoriesOf (c).contains (s) ? s : juce::String() }; };
+    if (is ("Groovebox") && sub == "Drum Machine")
+        return as (Category::drums);
+    if (is ("Groovebox") && sub == "Tracker")
+        return as (Category::tracker);
+    if (is ("Ambience"))
+        return as (Category::generative, sub == "Generative" ? juce::String ("Ambient") : sub);
+    if (is ("Novelty"))
+        return as (Category::game, "Novelty / Fun");
+    if (is ("Misc"))
+    {
+        if (sub == "Chord")
+            return as (Category::chords);
+        if (sub == "Educational" || sub == "Novelty / Fun")
+            return as (Category::game, sub);
+        if (sub == "Sequencer")
+            return as (Category::midi);
+        return as (Category::utility);
+    }
+    return as (categoryFromName (category), sub);
 }
 
 std::optional<FirmwareLibrary::Preset> FirmwareLibrary::presetOf (const Item& it)
@@ -92,11 +123,9 @@ std::optional<FirmwareLibrary::Preset> FirmwareLibrary::presetOf (const Item& it
         for (size_t i = 0; i < kNumCategoryPresets; ++i)
         {
             const auto& p = kCategoryPresets[i];
-            const auto c = categoryFromName (juce::String::fromUTF8 (p.category));
-            const auto sub = juce::String::fromUTF8 (p.subcategory);
-            if (c != Category::none)
-                m.emplace (normalise (juce::String::fromUTF8 (p.name)),
-                           Preset { c, subcategoriesOf (c).contains (sub) ? sub : juce::String() });
+            const auto preset = upgradeCategory (juce::String::fromUTF8 (p.category), juce::String::fromUTF8 (p.subcategory));
+            if (preset.category != Category::none)
+                m.emplace (normalise (juce::String::fromUTF8 (p.name)), preset);
         }
         return m;
     }();
@@ -131,7 +160,7 @@ FirmwareLibrary::Category FirmwareLibrary::categoryFromName (const juce::String&
 bool FirmwareLibrary::Listing::operator== (const Listing& o) const
 {
     return how == o.how && ref == o.ref && name == o.name && version == o.version && author == o.author && about == o.about
-        && repo == o.repo && category == o.category;
+        && repo == o.repo && category == o.category && tags == o.tags && base == o.base && isBase == o.isBase;
 }
 
 juce::String FirmwareLibrary::normalise (const juce::String& s)
@@ -307,13 +336,9 @@ void FirmwareLibrary::load()
             r.identity = e["identity"].toString();
             r.parsedName = e["parsed"].toString();
             r.customName = e["name"].toString();
-            r.category = categoryFromName (e["category"].toString());
-            r.subcategory = e["sub"].toString();
-            if (e["category"].toString().equalsIgnoreCase ("Novelty"))
-            {
-                r.category = Category::misc;
-                r.subcategory = "Novelty / Fun";
-            }
+            const auto category = upgradeCategory (e["category"].toString(), e["sub"].toString());
+            r.category = category.category;
+            r.subcategory = category.subcategory;
             r.seeded = e.getProperty ("seeded", false);
             r.rating = juce::jlimit (0, kMaxRating, (int) e["rating"]);
             r.url = e["url"].toString();
@@ -330,7 +355,11 @@ void FirmwareLibrary::load()
                 r.listing.author = l["author"].toString();
                 r.listing.about = l["about"].toString();
                 r.listing.repo = l["repo"].toString();
-                r.listing.category = categoryFromName (l["category"].toString());
+                r.listing.category = upgradeCategory (l["category"].toString(), {}).category;
+                r.listing.tags.addTokens (l["tags"].toString(), ",", {});
+                r.listing.tags.removeEmptyStrings();
+                r.listing.base = l["base"].toString();
+                r.listing.isBase = l.getProperty ("isBase", false);
             }
             // shown at once, as last seen: the scan corrects it
             r.found = root != juce::File() && r.file.isAChildOf (root);
@@ -391,6 +420,12 @@ void FirmwareLibrary::save()
                 l->setProperty ("repo", r.listing.repo);
             if (r.listing.category != Category::none)
                 l->setProperty ("category", categoryName (r.listing.category));
+            if (! r.listing.tags.isEmpty())
+                l->setProperty ("tags", r.listing.tags.joinIntoString (","));
+            if (r.listing.base.isNotEmpty())
+                l->setProperty ("base", r.listing.base);
+            if (r.listing.isBase)
+                l->setProperty ("isBase", true);
             o->setProperty ("listing", juce::var (l));
         }
         list.add (juce::var (o));

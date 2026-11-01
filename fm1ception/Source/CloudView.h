@@ -15,7 +15,7 @@ struct LibraryEngines
 };
 
 //==============================================================================
-// The library window's CLOUD: the firmwares of fm1-emu's list (CloudCatalog),
+// The library window's CLOUD: the firmwares of mutant.cloud's list (CloudCatalog),
 // with what each is, who made it, and whether it is in the library yet. GET
 // (or UPDATE, for a newer version of one in it) downloads it into the
 // library's folder; double-click (or Return) downloads it if need be and loads
@@ -27,7 +27,7 @@ class CloudView : public juce::Component,
                   private juce::ChangeListener
 {
 public:
-    enum Column { name = 1, version, author, status, about, license, project };
+    enum Column { name = 1, version, author, status, about, license, project, tags };
 
     CloudView (CloudCatalog&, FirmwareLibrary&, LibraryEngines);
     ~CloudView() override;

@@ -278,7 +278,7 @@ int snapshots (const juce::File& dir, const juce::File& fw)
         lib.setRoot (folder);
         lib.waitForScan (30000);
         const auto list = juce::File (__FILE__).getParentDirectory().getParentDirectory().getParentDirectory().getChildFile ("web/firmwares.json");
-        CloudCatalog cloud (lib, tmp.getChildFile ("cloud.json"), juce::URL (list), {});
+        CloudCatalog cloud (lib, tmp.getChildFile ("cloud.json"), { juce::URL (list) }, {});
         const auto felucca = folder.getChildFile ("Cloud/Felucca 1.6.1.fwsc"), salt = folder.getChildFile ("Cloud/Felucca [Salt] 0.8.fwsc");
         fw.copyFileTo (felucca);
         fw.copyFileTo (salt);
@@ -632,12 +632,27 @@ int main (int argc, char** argv)
                     auto subs = FirmwareLibrary::subcategoriesOf ((Category) i);
                     const auto shown = subs.joinIntoString (", ");
                     subs.sortNatural();
-                    sorted = sorted && ! subs.isEmpty() && subs.joinIntoString (", ") == shown;
-                    all.add (FirmwareLibrary::categoryName ((Category) i) + ": " + shown);
+                    sorted = sorted && subs.joinIntoString (", ") == shown;
+                    if (! subs.isEmpty())
+                        all.add (FirmwareLibrary::categoryName ((Category) i) + ": " + shown);
                 }
-                check (sorted && FirmwareLibrary::kCategories == 5 && FirmwareLibrary::categoryFromName ("Novelty") == Category::none
-                           && FirmwareLibrary::subcategoriesOf (Category::misc).contains ("Novelty / Fun"),
-                       "each category has sub categories A to Z, Novelty is one of Misc: " + all.joinIntoString ("; "));
+                check (sorted && FirmwareLibrary::kCategories == 11 && all.size() == 4
+                           && FirmwareLibrary::categoryFromName ("midi") == Category::midi
+                           && FirmwareLibrary::categoryFromName ("Misc") == Category::none,
+                       "the categories are mutant.cloud's tags, their sub categories A to Z: " + all.joinIntoString ("; "));
+                auto up = [] (const char* c, const char* sub)
+                {
+                    const auto p = FirmwareLibrary::upgradeCategory (c, sub);
+                    return FirmwareLibrary::categoryName (p.category) + (p.subcategory.isNotEmpty() ? " / " + p.subcategory : juce::String());
+                };
+                check (up ("Ambience", "Generative") == "Generative / Ambient" && up ("Ambience", "Instrument") == "Generative / Instrument"
+                           && up ("Groovebox", "Drum Machine") == "Drums" && up ("Groovebox", "Tracker") == "Tracker"
+                           && up ("Groovebox", "Workstation") == "Groovebox / Workstation" && up ("Misc", "Chord") == "Chords"
+                           && up ("Misc", "Sequencer") == "MIDI" && up ("Misc", "Utility / USB") == "Utility"
+                           && up ("Misc", "Educational") == "Game / Educational" && up ("Novelty", "") == "Game / Novelty / Fun"
+                           && up ("Synth", "FM") == "Synth / FM",
+                       "the categories before the tags become theirs: Ambience / Generative is " + up ("Ambience", "Generative")
+                           + ", Misc / Sequencer " + up ("Misc", "Sequencer"));
             }
             {
                 const auto presets = tmp.getChildFile ("Presets"), presetDb = tmp.getChildFile ("presets.json");
@@ -651,7 +666,7 @@ int main (int argc, char** argv)
                     pl.setRoot (presets);
                     pl.waitForScan (30000);
                     const auto b = itemFor (pl, beetle), o = itemFor (pl, other);
-                    seeded = b && b->category == Category::groovebox && b->subcategory == "Tracker" && o && o->category == Category::none;
+                    seeded = b && b->category == Category::tracker && b->subcategory.isEmpty() && o && o->category == Category::none;
                     pl.setCategory (beetle, Category::none);
                     pl.describe ([] (const FirmwareLibrary::Item& it)
                     {
@@ -665,7 +680,7 @@ int main (int argc, char** argv)
                         return l;
                     });
                     const auto o2 = itemFor (pl, other);
-                    described = o2 && o2->category == Category::misc && o2->subcategory == "Chord"
+                    described = o2 && o2->category == Category::chords && o2->subcategory.isEmpty()
                              && itemFor (pl, beetle)->category == Category::none;
                 }
                 {
@@ -675,7 +690,7 @@ int main (int argc, char** argv)
                     kept = itemFor (pl, beetle).has_value() && itemFor (pl, beetle)->category == Category::none;
                 }
                 check (seeded && described && kept,
-                       "a firmware first found by a known name gets its preset (beetle: Groovebox / Tracker), one first "
+                       "a firmware first found by a known name gets its preset (beetle: Tracker), one first "
                        "described as one then, and one set back to none stays none");
             }
             lib.setCategory (junk, Category::none);
@@ -702,20 +717,20 @@ int main (int argc, char** argv)
                        "the library keeps it");
             }
             lib.describe ([] (const FirmwareLibrary::Item&) { return FirmwareLibrary::Listing(); });
-            lib.setCategory (junk, Category::misc);
+            lib.setCategory (junk, Category::utility);
             lib.setUrl (junk, "https://example.com/fw");
             lib.setCustomName (junk, "My Junk");
         }
         {
             const auto text = db.loadFileAsString();
-            db.replaceWithText (text.replace ("\"category\": \"Misc\"", "\"category\": \"Novelty\""));
+            db.replaceWithText (text.replace ("\"category\": \"Utility\"", "\"category\": \"Novelty\""));
         }
         {
             FirmwareLibrary lib (db);
             const auto j = itemFor (lib, junk);
-            check (lib.getRoot() == folder && j.has_value() && j->rating == 4 && j->category == Category::misc
+            check (lib.getRoot() == folder && j.has_value() && j->rating == 4 && j->category == Category::game
                        && j->subcategory == "Novelty / Fun" && j->url == "https://example.com/fw" && j->name() == "My Junk",
-                   "the folder, rating, category, URL and name are kept, an old Novelty as Misc / Novelty / Fun");
+                   "the folder, rating, category, URL and name are kept, an old Novelty as Game / Novelty / Fun");
 
             junk.moveFileTo (moved);
             lib.rescan();
@@ -839,6 +854,7 @@ int main (int argc, char** argv)
     {
         using Entry = CloudCatalog::Entry;
         using Status = CloudCatalog::Status;
+        using Category = FirmwareLibrary::Category;
         const auto repo = juce::File (__FILE__).getParentDirectory().getParentDirectory();
         std::vector<Entry> listed;
         juce::String error;
@@ -864,6 +880,77 @@ int main (int argc, char** argv)
         std::vector<Entry> none;
         check (! CloudCatalog::parse ("<html>404</html>", none, error) && none.empty() && error.isNotEmpty(),
                "a page that is not the list is refused (" + error + ")");
+
+        // mutant.cloud's list: its FM-1 firmwares, a package each, its bases and tags
+        {
+            const juce::String sha (juce::String::repeatedString ("ab", 32));
+            const juce::String mutant (R"({
+              "bases": { "felucca": { "name": "Felucca", "repo": "hugelton/Felucca" }, "original": { "name": "its own code" } },
+              "entries": [
+                { "id": "felucca", "kind": "firmware", "name": "Felucca", "repo": "hugelton/Felucca", "devices": ["fm1"], "base": "felucca",
+                  "tags": ["synth"], "primaryTag": "synth",
+                  "release": { "version": "v1.6", "assets": [ { "name": "felucca-1.6.fwsc", "url": "https://x.io/felucca-1.6.fwsc", "product": "FM-1_900", "sha256": ")" + sha + R"(" } ] } },
+                { "id": "tess", "kind": "firmware", "name": "Tess", "repo": "a/tess", "devices": ["fm1", "smk37"], "base": "felucca",
+                  "tags": ["sampler", "groovebox"], "primaryTag": "groovebox", "beta": true, "card": "https://x.io/card.png",
+                  "links": [ { "label": "Install", "url": "https://x.io/install" }, { "label": "Try in browser", "url": "https://x.io/play" } ],
+                  "release": { "version": "2.1", "date": "2026-10-30", "assets": [
+                    { "name": "tess-2.1.fwsc", "url": "https://x.io/tess-2.1.fwsc", "product": "FM-1_700" },
+                    { "name": "tess-2.1-1core.fwsc", "url": "https://x.io/tess-2.1-1core.fwsc", "product": "FM-1_700" },
+                    { "name": "tess-2.1-smk37.fwsc", "url": "https://x.io/tess-2.1-smk37.fwsc", "product": "SMK-37 Pro_700" },
+                    { "name": "FM-1-Original-V15.fwsc", "url": "https://x.io/stock.fwsc", "product": "FM-1_015" },
+                    { "name": "tess-sounds.bin", "url": "https://x.io/sounds.bin" } ] } },
+                { "id": "stock", "kind": "firmware", "name": "M-VAVE stock", "stock": true, "devices": ["fm1"], "base": "original",
+                  "release": { "assets": [ { "name": "FM-1_015.fwsc", "url": "https://x.io/FM-1_015.fwsc", "product": "FM-1_015" } ] } },
+                { "id": "pageonly", "kind": "firmware", "name": "Page Only", "repo": "b/page", "devices": ["fm1"], "tags": ["midi"], "primaryTag": "midi" },
+                { "id": "smkonly", "kind": "firmware", "name": "SMK Only", "devices": ["smk37"] },
+                { "id": "editor", "kind": "tool", "name": "An Editor", "devices": ["fm1"] } ] })");
+            std::vector<Entry> m;
+            const bool readsMutant = CloudCatalog::parse (mutant, m, error);
+            auto in = [] (const std::vector<Entry>& es, const juce::String& id) -> const Entry*
+            {
+                for (const auto& e : es)
+                    if (e.id == id)
+                        return &e;
+                return nullptr;
+            };
+            juce::StringArray ids;
+            for (const auto& e : m)
+                ids.add (e.id);
+            const auto* fel = in (m, "felucca");
+            const auto* tess = in (m, "tess");
+            const auto* core = in (m, "tess/1core");
+            check (readsMutant && ids.joinIntoString (",") == "felucca,tess,tess/1core,stock,pageonly",
+                   "mutant.cloud's list reads its FM-1 firmwares, a package for the FM-1 each: " + ids.joinIntoString (",") + " " + error);
+            check (fel != nullptr && fel->isBase && fel->base.isEmpty() && fel->version == "1.6" && fel->category == Category::synth
+                       && fel->shownName() == "Felucca (base)" && fel->current && CloudCatalog::digestOf (*fel) == sha.substring (0, 32),
+                   "a base is marked one (" + (fel != nullptr ? fel->shownName() : juce::String()) + "), its version without the v, its checksum");
+            check (tess != nullptr && ! tess->isBase && tess->base == "Felucca" && tess->category == Category::groovebox
+                       && tess->tags.joinIntoString (",") == "groovebox,sampler" && tess->beta && tess->date == "2026-10-30"
+                       && tess->card == "https://x.io/card.png" && tess->installer == "https://x.io/install" && tess->links.size() == 2
+                       && tess->package == "https://x.io/tess-2.1.fwsc",
+                   "one built on it says so, its primary tag first and as its category, its pages and its card");
+            check (core != nullptr && core->name == "Tess (1core)" && core->package.endsWith ("1core.fwsc") && core->key() == "tess/1core@2.1",
+                   "a release's other package for the FM-1 is an entry of its own: " + (core != nullptr ? core->name : juce::String()));
+            const auto* page = in (m, "pageonly");
+            check (page != nullptr && ! page->downloadable() && page->category == Category::midi,
+                   "one with no package installs from its page");
+
+            std::vector<Entry> emu;
+            CloudCatalog::parse (R"({ "firmwares": [
+                { "id": "page", "name": "Page Only", "version": "3", "repo": "https://github.com/B/page/", "package": "https://y.io/page-3.fwsc", "hub": "pagehub" },
+                { "id": "felucca", "name": "Felucca", "version": "1.5", "repo": "https://github.com/hugelton/Felucca", "package": "https://y.io/felucca-1.5.fwsc" },
+                { "id": "extra", "name": "Only fm1-emu", "version": "1", "package": "https://y.io/extra.fwsc" },
+                { "id": "mvave", "name": "M-VAVE stock firmware", "version": "015", "byo": true, "package": "https://m-vave.com/FM-1.fwsc" } ] })", emu, error);
+            const auto merged = CloudCatalog::merge ({ m, emu });
+            const auto* filled = in (merged, "pageonly");
+            const auto* kept = in (merged, "felucca");
+            check (merged.size() == m.size() + 1 && in (merged, "extra") != nullptr && filled != nullptr
+                       && filled->package == "https://y.io/page-3.fwsc" && filled->version == "3" && filled->hub == "pagehub" && ! filled->current
+                       && kept != nullptr && kept->version == "1.6" && kept->package.startsWith ("https://x.io/")
+                       && in (merged, "mvave") == nullptr && in (merged, "stock") != nullptr,
+                   "fm1-emu's list fills in a package mutant.cloud has none for (the same project), and a firmware it lacks; "
+                   "M-VAVE's stock firmware is one");
+        }
 
         const auto tmp = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fm1c-cloud-test");
         tmp.deleteRecursively();
@@ -894,7 +981,7 @@ int main (int argc, char** argv)
         lib.setRoot (folder);
         lib.waitForScan (30000);
         const auto cache = tmp.getChildFile ("cloud.json");
-        CloudCatalog cloud (lib, cache, juce::URL (listFile), {});
+        CloudCatalog cloud (lib, cache, { juce::URL (listFile) }, {});
         check (cloud.entries().empty(), "a Cloud with no list kept starts empty");
         cloud.refresh();
         check (cloud.isFetching() && cloud.waitForIdle (30000), "it fetches the list in the background");
@@ -949,7 +1036,7 @@ int main (int argc, char** argv)
                    "a newer version of one in the library is an UPDATE");
 
         {
-            CloudCatalog offline (lib, cache, juce::URL (tmp.getChildFile ("not-there.json")), {});
+            CloudCatalog offline (lib, cache, { juce::URL (tmp.getChildFile ("not-there.json")) }, {});
             check (offline.entries().size() == 3, "the list kept shows with no network");
             offline.refresh();
             offline.waitForIdle (30000);
@@ -957,7 +1044,7 @@ int main (int argc, char** argv)
                    "and a fetch that fails keeps it (" + offline.getFetchError() + ")");
         }
         {
-            CloudCatalog fromWeb (lib, cache, juce::URL ("https://example.invalid/firmwares.json"), {});
+            CloudCatalog fromWeb (lib, cache, { juce::URL ("https://example.invalid/firmwares.json") }, {});
             juce::String why;
             if (const auto* e = fromWeb.find ("shrub@0.5"))
                 fromWeb.download (*e, [&why] (const juce::File&, const juce::String& err) { why = err; });
@@ -1015,7 +1102,7 @@ int main (int argc, char** argv)
             tmp.getChildFile ("HubFirmwares").createDirectory();
             hubLib.setRoot (tmp.getChildFile ("HubFirmwares"));
             hubLib.waitForScan (30000);
-            CloudCatalog withHub (hubLib, tmp.getChildFile ("hub-cloud.json"), juce::URL (hubList), juce::URL (hubFile));
+            CloudCatalog withHub (hubLib, tmp.getChildFile ("hub-cloud.json"), { juce::URL (hubList) }, juce::URL (hubFile));
             withHub.refresh();
             withHub.waitForIdle (30000);
             const auto* stale = withHub.find ("stale@0.6");
@@ -1079,7 +1166,7 @@ int main (int argc, char** argv)
                    "one named for a firmware is that firmware, its version its file's: " + byName.name() + " " + byName.version());
             const auto hubOnly = listed ("no-package-hub-1.2.fwsc");
             check (hubOnly.name() == "No Package Hub" && hubOnly.listing.author == "someone" && hubOnly.listing.about == "Drums, only on the Hub"
-                       && hubOnly.shownCategory() == FirmwareLibrary::Category::groovebox && hubOnly.category == FirmwareLibrary::Category::none
+                       && hubOnly.shownCategory() == FirmwareLibrary::Category::drums && hubOnly.category == FirmwareLibrary::Category::none
                        && hubOnly.url == "https://github.com/o/n" && hubOnly.listing.ref == "hub:nopkg",
                    "the Hub describes its own too: its name, author, what it is, its kind as a category, its project");
             const auto unheard = listed ("Unheard Of 1.0.fwsc");
@@ -1098,7 +1185,7 @@ int main (int argc, char** argv)
                 check (kept.listing == copy.listing, "and the library keeps what they say");
             }
 
-            CloudCatalog again (hubLib, tmp.getChildFile ("hub-cloud.json"), juce::URL (hubList), juce::URL (hubFile));
+            CloudCatalog again (hubLib, tmp.getChildFile ("hub-cloud.json"), { juce::URL (hubList) }, juce::URL (hubFile));
             check (again.find ("stale@0.7") != nullptr, "the Hub's packages are kept with the list");
             check (again.describe (hubOnly).name == "No Package Hub" && again.describe (copy).how == How::checksum,
                    "and what the Hub says of them");
@@ -1140,7 +1227,7 @@ int main (int argc, char** argv)
             net.refresh();
             net.waitForIdle (60000);
             check (net.entries().size() >= 50 && net.getHubError().isEmpty(),
-                   "fm1-emu's list from GitHub: " + juce::String ((int) net.entries().size()) + " firmwares " + net.getFetchError()
+                   "mutant.cloud's list, with fm1-emu's: " + juce::String ((int) net.entries().size()) + " firmwares " + net.getFetchError()
                        + net.getHubError());
             // every package the list (with the Hub's) names is there: a HEAD-sized look at each
             tmp.getChildFile ("NetFirmwares").createDirectory();

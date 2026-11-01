@@ -29,26 +29,44 @@ class FirmwareLibrary : public juce::ChangeBroadcaster,
                         private juce::Timer
 {
 public:
-    enum class Category { none = -1, synth, groovebox, ambience, game, misc };
-    static constexpr int kCategories = 5;
+    /** mutant.cloud's tags (firmware.json), with Synth and Groovebox first. */
+    enum class Category { none = -1, synth, groovebox, drums, sampler, tracker, chords, generative, game, midi, experimental, utility };
+    static constexpr int kCategories = 11;
     static constexpr int kMaxRating = 5;
     static juce::String categoryName (Category);
+    /** A category's name, or its tag ("midi"); one of before the tags ("Misc") is none. */
     static Category categoryFromName (const juce::String&);
-    /** A category's sub categories ("FM", "VA / Retro", ... of Synth), A to Z. */
+    /** A category's sub categories ("FM", "VA / Retro", ... of Synth), A to Z; most have none. */
     static const juce::StringArray& subcategoriesOf (Category);
+    struct Preset
+    {
+        Category category = Category::none;
+        juce::String subcategory;
+    };
+    /** A category and sub category as they were named before the tags (Ambience, Misc, Novelty and
+        Groovebox's Drum Machine and Tracker) as they are now; any other as it is. */
+    static Preset upgradeCategory (const juce::String& category, const juce::String& subcategory);
+    /** Shown after the name of a firmware others are built on (CloudCatalog::Entry::isBase). */
+    static constexpr const char* kBaseMark = " (base)";
 
-    /** What the Cloud's lists (fm1-emu's, the FM-1 Firmware Hub's) say of a firmware, kept with it
-        (CloudCatalog::describe): the friendly name, who made it, what it is. */
+    /** What the Cloud's lists (mutant.cloud's, fm1-emu's, the FM-1 Firmware Hub's) say of a firmware,
+        kept with it (CloudCatalog::describe): the friendly name, who made it, what it is. */
     struct Listing
     {
-        /** How it was found to be the list's: downloaded from it, its bytes the Hub's own package
-            (both: `version` is its), or only its file's name (`version` is not). */
+        /** How it was found to be the list's: downloaded from it, its bytes a package the lists
+            give a checksum for (both: `version` is its), or only its file's name (`version` is not). */
         enum class How { none, download, checksum, name };
         How how = How::none;
-        /** "list:<id>" (fm1-emu's) or "hub:<id>" (the Hub's alone). */
+        /** "list:<id>" (the lists') or "hub:<id>" (the Hub's alone). */
         juce::String ref, name, version, author, about, repo;
-        /** The Hub's kind for it, as a category. */
+        /** Its primary tag (else the Hub's kind) as a category. */
         Category category = Category::none;
+        /** Its tags, the primary first (mutant.cloud's). */
+        juce::StringArray tags;
+        /** The firmware it is built on ("Felucca"), "" for its own code or none said. */
+        juce::String base;
+        /** Others are built on it. */
+        bool isBase = false;
 
         bool exact() const { return how == How::download || how == How::checksum; }
         bool operator== (const Listing&) const;
@@ -77,7 +95,7 @@ public:
         juce::String defaultName() const;
         /** The lists' version when they know its bytes, else its own. */
         juce::String version() const;
-        /** The user's category, else the Hub's. */
+        /** The user's category, else the lists'. */
         Category shownCategory() const { return category != Category::none ? category : listing.category; }
         /** Its file's name as a name and version ("Crepuscular Homunculus 0.26.19", "dub-1.4.3"): the
             name it gives itself instead when the file's says no more (FM-1.fwsc, SHRUB.fwsc). Not the
@@ -88,11 +106,6 @@ public:
     /** The category and sub category FM-1Ception gives a firmware of this name (CategoryPresets.cpp):
         its lists' name, else its own. A firmware with none of its own gets it when first found, or
         first described as one of those names. */
-    struct Preset
-    {
-        Category category = Category::none;
-        juce::String subcategory;
-    };
     static std::optional<Preset> presetOf (const Item&);
 
     /** "Name 1.2.3", "name-1.2.3", "Name v1.2" as name and version ("" if there is none). */

@@ -30,6 +30,23 @@ juce::String projectText (const juce::String& url)
     return parts.size() >= 2 ? host + "/" + parts[0] + "/" + parts[1] : host;
 }
 
+/** Its tags as the library names them, the primary first. */
+juce::String tagsText (const Entry& e)
+{
+    juce::StringArray names;
+    for (const auto& t : e.tags)
+    {
+        const auto c = FirmwareLibrary::categoryFromName (t);
+        names.add (c != FirmwareLibrary::Category::none ? FirmwareLibrary::categoryName (c) : t);
+    }
+    return names.joinIntoString (", ");
+}
+
+juce::String versionText (const Entry& e)
+{
+    return e.beta && e.version.isNotEmpty() ? e.version + " beta" : e.version;
+}
+
 int rank (Status s)
 {
     switch (s)
@@ -55,6 +72,7 @@ CloudView::CloudView (CloudCatalog& c, FirmwareLibrary& lib, LibraryEngines e)
     h.addColumn ("VERSION", version, 110, 60, 400, flags);
     h.addColumn ("AUTHOR", author, 140, 70, 400, flags);
     h.addColumn ("STATUS", status, 112, 100, 300, flags);
+    h.addColumn ("TAGS", tags, 150, 70, 600, flags);
     h.addColumn ("ABOUT", about, 380, 90, 4000, flags);
     h.addColumn ("LICENSE", license, 130, 70, 600, flags);
     h.addColumn ("PROJECT", project, 210, 90, 2000, flags);
@@ -130,7 +148,8 @@ void CloudView::refill()
         if (std::all_of (words.begin(), words.end(), [&e] (const juce::String& w)
             {
                 return e.name.containsIgnoreCase (w) || e.author.containsIgnoreCase (w) || e.about.containsIgnoreCase (w)
-                    || e.id.containsIgnoreCase (w);
+                    || e.id.containsIgnoreCase (w) || tagsText (e).containsIgnoreCase (w) || e.base.containsIgnoreCase (w)
+                    || (e.isBase && juce::String ("base").startsWithIgnoreCase (w));
             }))
             rows.push_back (i);
     }
@@ -154,6 +173,7 @@ void CloudView::resort()
         {
             case name:    return e.name;
             case version: return e.version;
+            case tags:    return tagsText (e);
             case author:  return e.author;
             case about:   return e.about;
             case license: return e.license;
@@ -219,7 +239,7 @@ void CloudView::updateStatus()
     else if (error.isNotEmpty())
         statusLine = count + " as fetched " + when + "  -  could not fetch it again: " + error;
     else
-        statusLine = count + (shown != total ? " (" + juce::String (shown) + " shown)" : juce::String()) + " in fm1-emu's list, fetched " + when;
+        statusLine = count + (shown != total ? " (" + juce::String (shown) + " shown)" : juce::String()) + " in mutant.cloud's list, fetched " + when;
 
     const auto folder = cloud.downloadFolder();
     hintLine = "Downloads go to "
@@ -228,11 +248,11 @@ void CloudView::updateStatus()
 
     juce::String empty;
     if (total == 0)
-        empty = cloud.isFetching() ? "Fetching the list of firmwares from github.com/joakimeriksson/fm1-emu..."
+        empty = cloud.isFetching() ? "Fetching the list of firmwares from mutant.cloud..."
               : error.isNotEmpty() ? "Could not fetch the list of firmwares (" + error + ").  Refresh tries again."
-                                   : "Refresh fetches the list of firmwares from github.com/joakimeriksson/fm1-emu.";
+                                   : "Refresh fetches the list of firmwares from mutant.cloud.";
     else if (shown == 0)
-        empty = "No firmware has \"" + searchText.trim() + "\" in its name, author or about.";
+        empty = "No firmware has \"" + searchText.trim() + "\" in its name, author, tags or about.";
     note.setText (empty, juce::dontSendNotification);
     note.setVisible (empty.isNotEmpty());
     repaint();
@@ -292,15 +312,27 @@ void CloudView::paintCell (juce::Graphics& g, int row, int column, int w, int h,
     switch (column)
     {
         case name:
-            g.setFont (theme::font (12.5f, true));
+        {
+            const auto bold = theme::font (12.5f, true);
+            g.setFont (bold);
             g.setColour (ink);
             g.drawText (e.name, r, juce::Justification::centredLeft, true);
+            if (e.isBase)
+            {
+                const auto x = (int) std::ceil (juce::GlyphArrangement::getStringWidth (bold, e.name));
+                g.setFont (theme::font (12.5f));
+                g.setColour (theme::dimSilk);
+                g.drawText (FirmwareLibrary::kBaseMark, r.withTrimmedLeft (x), juce::Justification::centredLeft, true);
+            }
             break;
+        }
         case version:
         case author:
         case license:
+        case tags:
             g.setColour (column == author ? ink : theme::dimSilk);
-            g.drawText (column == version ? e.version : column == author ? e.author : e.license, r, juce::Justification::centredLeft, true);
+            g.drawText (column == version ? versionText (e) : column == author ? e.author : column == tags ? tagsText (e) : e.license,
+                        r, juce::Justification::centredLeft, true);
             break;
         case about:
             g.setColour (theme::dimSilk);
@@ -354,9 +386,13 @@ juce::String CloudView::getCellTooltip (int row, int column)
     {
         case name:
         case about:
-            return e.title() + (e.author.isNotEmpty() ? "  by " + e.author : juce::String()) + "\n\n" + e.about;
+            return e.title() + (e.author.isNotEmpty() ? "  by " + e.author : juce::String())
+                 + (e.isBase ? "\nA base: other firmwares are built on it" : juce::String())
+                 + (e.base.isNotEmpty() ? "\nBuilt on " + e.base : juce::String()) + "\n\n" + e.about;
         case license:
             return e.license;
+        case tags:
+            return tagsText (e);
         case project:
             return e.repo;
         case status:
@@ -491,6 +527,11 @@ void CloudView::showRowMenu (int row)
     m.addSeparator();
     if (LibraryView::openableUrl (e.repo).isNotEmpty())
         m.addItem ("Open Project Page", [url = e.repo] { open (url); });
+    if (LibraryView::openableUrl (e.homepage).isNotEmpty() && e.homepage != e.repo)
+        m.addItem ("Open Home Page", [url = e.homepage] { open (url); });
+    for (const auto& [label, url] : e.links)
+        if (LibraryView::openableUrl (url).isNotEmpty() && url != e.installer)
+            m.addItem ("Open " + label, [url] { open (url); });
     if (e.hub.isNotEmpty())
         m.addItem ("Open on the FM-1 Firmware Hub", [url = e.hubPage()] { open (url); });
     if (LibraryView::openableUrl (e.installer).isNotEmpty())

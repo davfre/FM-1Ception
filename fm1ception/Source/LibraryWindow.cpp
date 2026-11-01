@@ -404,12 +404,12 @@ LibraryView::LibraryView (FirmwareLibrary& lib, Engines e, CloudCatalog* c, Scre
     rescanButton.setTooltip ("Look through the folder again");
     rescanButton.onClick = [this] { library.rescan(); };
     addAndMakeVisible (rescanButton);
-    refreshButton.setTooltip ("Fetch fm1-emu's list of firmwares again");
+    refreshButton.setTooltip ("Fetch mutant.cloud's list of firmwares again");
     refreshButton.onClick = [this] { if (cloud != nullptr) cloud->refresh(); };
     addChildComponent (refreshButton);
 
     localTab.setTooltip ("The firmwares in your folder");
-    cloudTab.setTooltip ("Community firmwares from fm1-emu's list (github.com/joakimeriksson/fm1-emu), to download into your folder");
+    cloudTab.setTooltip ("Community firmwares from mutant.cloud's list, to download into your folder");
     localTab.setConnectedEdges (juce::Button::ConnectedOnRight);
     cloudTab.setConnectedEdges (juce::Button::ConnectedOnLeft);
     localTab.onClick = [this] { showCloud (false); };
@@ -597,11 +597,30 @@ void LibraryView::updateInfo()
     info.show (std::move (next));
 }
 
+bool LibraryView::isBase (const Item& it)
+{
+    return it.listing.isBase && it.listing.exact();
+}
+
+void LibraryView::addListed (InfoPanel::Info& i, const juce::StringArray& tags, const juce::String& base)
+{
+    juce::StringArray names;
+    for (const auto& t : tags)
+    {
+        const auto c = FirmwareLibrary::categoryFromName (t);
+        names.add (c != Category::none ? FirmwareLibrary::categoryName (c) : t);
+    }
+    if (! names.isEmpty())
+        i.facts.push_back ({ "Tags", names.joinIntoString (", ") });
+    if (base.isNotEmpty())
+        i.facts.push_back ({ "Built on", base });
+}
+
 InfoPanel::Info LibraryView::infoOf (const Item& it) const
 {
     InfoPanel::Info i;
     i.key = "local:" + it.file.getFullPathName();
-    i.title = it.name();
+    i.title = it.name() + (isBase (it) ? FirmwareLibrary::kBaseMark : "");
     i.version = it.version();
     i.author = it.listing.author;
     i.about = it.listing.about;
@@ -609,6 +628,7 @@ InfoPanel::Info LibraryView::infoOf (const Item& it) const
                + (it.subcategory.isNotEmpty() ? juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + it.subcategory : juce::String());
     i.rating = it.rating;
     i.note = it.isPackage ? howListed (it) : juce::String ("Not an FM-1 update package");
+    addListed (i, it.listing.tags, it.listing.base);
     i.facts.push_back ({ "File", it.file.getFileName() });
     i.facts.push_back ({ "Folder", shortPath (it.file.getParentDirectory()) });
     i.facts.push_back ({ "Added", formatDay (it.added) });
@@ -636,8 +656,8 @@ InfoPanel::Info LibraryView::infoOf (const CloudCatalog::Entry& e) const
 {
     InfoPanel::Info i;
     i.key = "cloud:" + e.key();
-    i.title = e.name;
-    i.version = e.version;
+    i.title = e.shownName();
+    i.version = e.beta && e.version.isNotEmpty() ? e.version + " beta" : e.version;
     i.author = e.author;
     i.about = e.about;
     const auto st = cloud->statusOf (e);
@@ -649,8 +669,15 @@ InfoPanel::Info LibraryView::infoOf (const CloudCatalog::Entry& e) const
     i.facts.push_back ({ "Status", CloudView::statusText (st) });
     if (file != juce::File())
         i.facts.push_back ({ "In library", file.getFileName() });
+    addListed (i, e.tags, e.base);
+    if (e.date.isNotEmpty())
+        i.facts.push_back ({ "Released", e.date });
+    if (e.archived)
+        i.facts.push_back ({ "Archived", "Its author no longer works on it" });
     if (e.license.isNotEmpty())
         i.facts.push_back ({ "License", e.license });
+    if (e.homepage.isNotEmpty() && e.homepage != e.repo)
+        i.facts.push_back ({ "Home page", e.homepage.fromFirstOccurrenceOf ("://", false, false) });
     if (e.hub.isNotEmpty())
         i.facts.push_back ({ "Hub", e.hubPage().fromFirstOccurrenceOf ("://", false, false) });
     if (e.repo.isNotEmpty())
@@ -938,7 +965,7 @@ void LibraryView::paint (juce::Graphics& g)
     g.setFont (font);
     if (cloudShown)
     {
-        const juce::String source ("github.com/joakimeriksson/fm1-emu  -  web/firmwares.json");
+        const juce::String source ("mutant.cloud  -  firmware.json");
         g.setColour (overSource ? theme::amber : theme::silk);
         g.strokePath (linkIcon (pathArea.toFloat().withWidth (18.0f).reduced (3.0f, 0.0f).withSizeKeepingCentre (12.0f, 12.0f)),
                       juce::PathStrokeType (1.2f));
@@ -1041,10 +1068,20 @@ void LibraryView::paintCell (juce::Graphics& g, int row, int column, int w, int 
         case firmwareName:
             if (it.file == editingName)
                 break;
-            g.setFont (theme::font (12.5f, true));
+        {
+            const auto bold = theme::font (12.5f, true);
+            g.setFont (bold);
             g.setColour (! it.isPackage ? theme::warn : selected ? juce::Colours::white : theme::silk);
             g.drawText (it.name(), r, juce::Justification::centredLeft, true);
+            if (isBase (it))
+            {
+                g.setFont (theme::font (12.5f));
+                g.setColour (theme::dimSilk);
+                g.drawText (FirmwareLibrary::kBaseMark, r.withTrimmedLeft ((int) std::ceil (juce::GlyphArrangement::getStringWidth (bold, it.name()))),
+                            juce::Justification::centredLeft, true);
+            }
             break;
+        }
         case version:
             // the lists' version is the one they give its bytes; its own is only what it is named
             g.setColour (it.listing.exact() ? theme::silk : theme::dimSilk);

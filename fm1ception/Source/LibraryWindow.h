@@ -17,7 +17,7 @@ namespace fm1c
 // to load it into the selected engine, or drag it onto an engine. A star sets
 // its rating (the same star again clears it).
 //
-// LOCAL | CLOUD at the left of the bar: CLOUD shows fm1-emu's list of community
+// LOCAL | CLOUD at the left of the bar: CLOUD shows mutant.cloud's list of community
 // firmwares instead (CloudView), to download into the folder. INFO shows the
 // panel at the right (InfoPanel): the firmware under the mouse, else the one
 // selected, with its screens.
@@ -70,6 +70,9 @@ public:
     InfoPanel& infoPanel() { return info; }
     /** What the panel shows of one of the library's, and of one of the Cloud's. */
     InfoPanel::Info infoOf (const FirmwareLibrary::Item&) const;
+    /** Others are built on it, as the lists know it by its bytes. */
+    static bool isBase (const FirmwareLibrary::Item&);
+    static void addListed (InfoPanel::Info&, const juce::StringArray& tags, const juce::String& base);
     InfoPanel::Info infoOf (const CloudCatalog::Entry&) const;
     /** The panel brought up to the row under the mouse (else the one selected): its timer's. */
     void updateInfo();
