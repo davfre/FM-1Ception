@@ -49,11 +49,22 @@ juce::Path linkIconPath (juce::Rectangle<float> r)
     return p;
 }
 
-juce::String hostOf (const juce::String& url)
+juce::Path globeIconPath (juce::Rectangle<float> r)
 {
-    auto s = url.fromFirstOccurrenceOf ("://", false, false);
-    s = s.upToFirstOccurrenceOf ("/", false, false).upToFirstOccurrenceOf ("?", false, false);
-    return s.startsWithIgnoreCase ("www.") ? s.substring (4) : s;
+    const auto s = juce::jmin (r.getWidth(), r.getHeight());
+    const auto b = juce::Rectangle<float> (s, s).withCentre (r.getCentre());
+    juce::Path p;
+    p.addEllipse (b);
+    p.addEllipse (b.reduced (s * 0.28f, 0.0f));
+    p.startNewSubPath (b.getX(), b.getCentreY());
+    p.lineTo (b.getRight(), b.getCentreY());
+    // the parallels a quarter up and down, where they meet the circle
+    for (const float y : { b.getCentreY() - s * 0.25f, b.getCentreY() + s * 0.25f })
+    {
+        p.startNewSubPath (b.getX() + s * 0.067f, y);
+        p.lineTo (b.getRight() - s * 0.067f, y);
+    }
+    return p;
 }
 
 juce::String normalisedUrl (const juce::String& text)
@@ -168,27 +179,16 @@ private:
 };
 
 //==============================================================================
-/** SOURCE URL: a link to it (its site's name) and a pencil to edit it; just the pencil while it
-    has none. */
+/** SOURCE URL: a globe that opens it and a pencil to edit it, side by side in the middle; just the
+    pencil while it has none. */
 class LibraryView::Link : public juce::Component,
                           public juce::SettableTooltipClient
 {
 public:
-    explicit Link (LibraryView& o) : owner (o)
-    {
-        editor.setFont (theme::font (12.5f));
-        editor.setTextToShowWhenEmpty ("https://...", theme::dimSilk);
-        editor.setSelectAllWhenFocused (true);
-        editor.onReturnKey = [this] { finish (true); };
-        editor.onEscapeKey = [this] { finish (false); };
-        editor.onFocusLost = [this] { finish (true); };
-        addChildComponent (editor);
-    }
+    explicit Link (LibraryView& o) : owner (o) {}
 
     void update (int r, const juce::File& f, const juce::String& u)
     {
-        if (f != file)
-            finish (false);
         row = r;
         file = f;
         if (u != url)
@@ -196,48 +196,32 @@ public:
             url = u;
             repaint();
         }
-        setTooltip (url.isEmpty() ? "Add where this firmware comes from" : url);
+        setTooltip (url.isEmpty() ? juce::String ("Add where this firmware comes from") : url);
     }
 
     void beginEdit()
     {
-        editing = true;
-        editor.setText (url, false);
-        editor.setVisible (true);
-        editor.grabKeyboardFocus();
-        editor.selectAll();
+        auto& view = owner;
+        juce::CallOutBox::launchAsynchronously (std::make_unique<UrlEditor> (view.library, file, url),
+                                                view.getLocalArea (this, getLocalBounds()), &view);
     }
-
-    void resized() override { editor.setBounds (getLocalBounds().reduced (1)); }
 
     void paint (juce::Graphics& g) override
     {
-        if (editing)
-            return;
-        const auto pencil = pencilBox();
-        g.setColour (hot == 2 ? theme::amber : theme::dimSilk);
-        g.strokePath (pencilIcon (pencil.reduced (5.0f)), juce::PathStrokeType (1.2f));
-        if (url.isEmpty())
-            return;
-
-        auto link = linkBox();
-        const bool openable = openableUrl (url).isNotEmpty();
-        const auto ink = ! openable ? theme::dimSilk : hot == 1 ? theme::amber : theme::silk;
-        g.setColour (ink);
-        g.strokePath (linkIcon (link.removeFromLeft (18.0f).reduced (4.0f)), juce::PathStrokeType (1.2f));
-        const auto host = hostOf (url);
-        g.setFont (theme::font (12.5f));
-        g.drawText (host.isEmpty() ? url : host, link.withTrimmedLeft (3.0f), juce::Justification::centredLeft, true);
-        if (hot == 1 && openable)
+        if (url.isNotEmpty())
         {
-            const float w = juce::jmin (link.getWidth() - 3.0f, juce::GlyphArrangement::getStringWidth (theme::font (12.5f), host));
-            g.fillRect (link.getX() + 3.0f, link.getCentreY() + 7.0f, w, 1.0f);
+            const bool openable = openableUrl (url).isNotEmpty();
+            g.setColour (! openable ? theme::dimSilk.withAlpha (0.5f) : hot == 1 ? theme::amber : theme::silk);
+            g.strokePath (globeIcon (globeBox().reduced (5.0f)), juce::PathStrokeType (1.2f));
         }
+        g.setColour (hot == 2 ? theme::amber : theme::dimSilk);
+        g.strokePath (pencilIcon (pencilBox().reduced (5.5f)), juce::PathStrokeType (1.2f));
     }
 
     void mouseMove (const juce::MouseEvent& e) override
     {
-        const int h = pencilBox().contains (e.position) ? 2 : url.isNotEmpty() && linkBox().contains (e.position) ? 1 : 0;
+        const int h = pencilBox().contains (e.position) ? 2
+                    : url.isNotEmpty() && openableUrl (url).isNotEmpty() && globeBox().contains (e.position) ? 1 : 0;
         if (h != hot)
         {
             hot = h;
@@ -263,7 +247,7 @@ public:
         {
             beginEdit();
         }
-        else if (url.isNotEmpty() && linkBox().contains (e.position))
+        else if (url.isNotEmpty() && globeBox().contains (e.position))
         {
             if (const auto u = openableUrl (url); u.isNotEmpty())
                 juce::URL (u).launchInDefaultBrowser();
@@ -275,35 +259,78 @@ public:
     }
 
 private:
+    /** The URL in a box of its own under the cell: Return or a click away keeps it, Escape does not. */
+    class UrlEditor : public juce::TextEditor
+    {
+    public:
+        UrlEditor (FirmwareLibrary& l, const juce::File& f, const juce::String& text) : library (l), file (f)
+        {
+            setFont (theme::font (12.5f));
+            setTextToShowWhenEmpty ("https://...", theme::dimSilk);
+            setIndents (6, 0);
+            setJustification (juce::Justification::centredLeft);
+            setText (text, false);
+            setSize (420, 28);
+            onReturnKey = [this] { close(); };
+            onEscapeKey = [this]
+            {
+                keep = false;
+                close();
+            };
+        }
+
+        ~UrlEditor() override
+        {
+            if (keep)
+                library.setUrl (file, normalisedUrl (getText()));
+        }
+
+        void parentHierarchyChanged() override
+        {
+            if (focused || getParentComponent() == nullptr)
+                return;
+            focused = true;
+            juce::Component::SafePointer<UrlEditor> safe (this);
+            juce::MessageManager::callAsync ([safe]
+            {
+                if (safe != nullptr && safe->isShowing())
+                {
+                    safe->grabKeyboardFocus();
+                    safe->selectAll();
+                }
+            });
+        }
+
+    private:
+        void close()
+        {
+            if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+                box->dismiss();
+        }
+
+        FirmwareLibrary& library;
+        const juce::File file;
+        bool keep = true, focused = false;
+    };
+
+    static constexpr float kIcon = 24.0f;
+
+    juce::Rectangle<float> globeBox() const
+    {
+        const auto c = getLocalBounds().toFloat().getCentre();
+        return { c.x - kIcon, c.y - kIcon * 0.5f, kIcon, kIcon };
+    }
+
     juce::Rectangle<float> pencilBox() const
     {
-        const auto b = getLocalBounds().toFloat();
-        return url.isEmpty() ? b.withWidth (24.0f).translated (2.0f, 0.0f) : b.withTrimmedLeft (b.getWidth() - 24.0f);
-    }
-
-    juce::Rectangle<float> linkBox() const
-    {
-        return getLocalBounds().toFloat().withTrimmedLeft (2.0f).withTrimmedRight (26.0f);
-    }
-
-    void finish (bool keep)
-    {
-        if (! editing)
-            return;
-        editing = false;
-        const auto text = editor.getText();
-        editor.setVisible (false);
-        repaint();
-        if (keep)
-            owner.library.setUrl (file, normalisedUrl (text));
+        const auto c = getLocalBounds().toFloat().getCentre();
+        return { url.isEmpty() ? c.x - kIcon * 0.5f : c.x, c.y - kIcon * 0.5f, kIcon, kIcon };
     }
 
     LibraryView& owner;
-    juce::TextEditor editor;
     juce::File file;
     juce::String url;
     int row = 0, hot = 0;
-    bool editing = false;
 };
 
 //==============================================================================
@@ -404,6 +431,8 @@ LibraryView::LibraryView (FirmwareLibrary& lib, Engines e, CloudCatalog* c, Scre
     rescanButton.setTooltip ("Look through the folder again");
     rescanButton.onClick = [this] { library.rescan(); };
     addAndMakeVisible (rescanButton);
+    cleanButton.onClick = [this] { confirmCleanUp(); };
+    addAndMakeVisible (cleanButton);
     refreshButton.setTooltip ("Fetch mutant.cloud's list of firmwares again");
     refreshButton.onClick = [this] { if (cloud != nullptr) cloud->refresh(); };
     addChildComponent (refreshButton);
@@ -448,6 +477,7 @@ LibraryView::LibraryView (FirmwareLibrary& lib, Engines e, CloudCatalog* c, Scre
     h.addColumn ("FIRMWARE NAME", firmwareName, 190, 90, 2000, flags);
     h.addColumn ("VERSION", version, 80, 50, 300, flags);
     h.addColumn ("AUTHOR", author, 130, 60, 600, flags);
+    h.addColumn ("BUILT ON", builtOn, 110, 60, 400, flags);
     h.addColumn ("DESCRIPTION", description, 260, 90, 3000, flags);
     h.addColumn ("DATE ADDED", dateAdded, 106, 80, 400, flags);
     h.addColumn ("DATE UPDATED", dateUpdated, 116, 80, 400, flags);
@@ -455,19 +485,23 @@ LibraryView::LibraryView (FirmwareLibrary& lib, Engines e, CloudCatalog* c, Scre
     h.addColumn ("SUB CATEGORY", subcategory, 124, 80, 300, flags);
     const int starsW = (int) std::ceil (kStarsX * 2.0f + (float) FirmwareLibrary::kMaxRating * (kStar + kStarGap));
     h.addColumn ("RATING", rating, starsW, starsW, starsW + 40, flags);
-    h.addColumn ("SOURCE URL", sourceUrl, 210, 90, 2000, flags);
+    h.addColumn ("LAUNCHES", launches, 90, 60, 200, flags);
+    h.addColumn ("SOURCE URL", sourceUrl, kSourceW, kSourceW, kSourceW + 60, flags);
     h.setSortColumnId (fileName, true);
     h.setStretchToFitActive (false);
     if (const auto saved = library.getColumns(); saved.isNotEmpty())
     {
         h.restoreFromString (saved);
-        // (a column the saved layout does not know goes last: this one goes beside CATEGORY)
-        if (! saved.contains ("id=\"" + juce::String ((int) subcategory) + "\""))
-            h.moveColumn (subcategory, h.getIndexOfColumnId (category, false) + 1);
+        // (a column the saved layout does not know goes last: these go beside the one they follow)
+        for (const auto [column, after] : { std::pair (subcategory, category), std::pair (builtOn, author), std::pair (launches, rating) })
+            if (! saved.contains ("id=\"" + juce::String ((int) column) + "\""))
+                h.moveColumn (column, h.getIndexOfColumnId (after, false) + 1);
     }
     // (a width saved is taken as it was, past the column's limits)
     if (h.getColumnWidth (rating) > starsW + 40)
         h.setColumnWidth (rating, starsW);
+    if (h.getColumnWidth (sourceUrl) > kSourceW + 60)
+        h.setColumnWidth (sourceUrl, kSourceW);
     sortColumn = h.getSortColumnId() != 0 ? h.getSortColumnId() : (int) fileName;
     sortForwards = h.isSortedForwards();
 
@@ -532,6 +566,7 @@ void LibraryView::showCloud (bool on)
     table.setVisible (! on);
     pathButton.setVisible (! on);
     rescanButton.setVisible (! on);
+    cleanButton.setVisible (! on);
     refreshButton.setVisible (on);
     refreshButton.setEnabled (cloud != nullptr && ! cloud->isFetching());
     localTab.setToggleState (! on, juce::dontSendNotification);
@@ -633,6 +668,8 @@ InfoPanel::Info LibraryView::infoOf (const Item& it) const
     i.facts.push_back ({ "Folder", shortPath (it.file.getParentDirectory()) });
     i.facts.push_back ({ "Added", formatDay (it.added) });
     i.facts.push_back ({ "Updated", formatDay (it.modified) });
+    if (it.launches > 0)
+        i.facts.push_back ({ "Launches", juce::String (it.launches) });
     if (it.size > 0)
         i.facts.push_back ({ "Size", juce::File::descriptionOfSizeInBytes (it.size) });
     if (it.identity.isNotEmpty())
@@ -747,6 +784,7 @@ juce::String LibraryView::openableUrl (const juce::String& url)
 juce::String LibraryView::shortPath (const juce::File& f) { return shortPathText (f); }
 juce::String LibraryView::revealText() { return revealMenuText(); }
 juce::Path LibraryView::linkIcon (juce::Rectangle<float> r) { return linkIconPath (r); }
+juce::Path LibraryView::globeIcon (juce::Rectangle<float> r) { return globeIconPath (r); }
 
 juce::String LibraryView::middleEllipsis (const juce::String& text, const juce::Font& font, float width)
 {
@@ -795,6 +833,7 @@ void LibraryView::refill()
         {
             return it.name().containsIgnoreCase (w) || it.file.getFileName().containsIgnoreCase (w)
                 || it.listing.author.containsIgnoreCase (w) || it.listing.about.containsIgnoreCase (w)
+                || it.listing.base.containsIgnoreCase (w)
                 || FirmwareLibrary::categoryName (it.shownCategory()).containsIgnoreCase (w) || it.subcategory.containsIgnoreCase (w);
         });
         if (matches)
@@ -825,6 +864,7 @@ void LibraryView::resort()
             case description:  return it.listing.about;
             case category:     return FirmwareLibrary::categoryName (it.shownCategory());
             case subcategory:  return it.subcategory;
+            case builtOn:      return it.listing.base;
             case sourceUrl:    return it.url;
             default:           return {};
         }
@@ -834,7 +874,8 @@ void LibraryView::resort()
         return (column == category && it.shownCategory() == Category::none) || (column == rating && it.rating == 0)
             || (column == sourceUrl && it.url.isEmpty()) || (column == version && it.version().isEmpty())
             || (column == author && it.listing.author.isEmpty()) || (column == description && it.listing.about.isEmpty())
-            || (column == subcategory && it.subcategory.isEmpty());
+            || (column == subcategory && it.subcategory.isEmpty()) || (column == builtOn && it.listing.base.isEmpty())
+            || (column == launches && it.launches == 0);
     };
 
     const int col = sortColumn;
@@ -852,6 +893,7 @@ void LibraryView::resort()
             case dateAdded:   c = (int) juce::jlimit<juce::int64> (-1, 1, a.added.toMilliseconds() - b.added.toMilliseconds()); break;
             case dateUpdated: c = (int) juce::jlimit<juce::int64> (-1, 1, a.modified.toMilliseconds() - b.modified.toMilliseconds()); break;
             case rating:      c = a.rating - b.rating; break;
+            case launches:    c = a.launches - b.launches; break;
             default:          c = text (a, col).compareNatural (text (b, col)); break;
         }
         if (c != 0)
@@ -937,6 +979,12 @@ void LibraryView::updateStatus()
 
     pathButton.setButtonText (root == juce::File() ? "Set Path..." : "Change...");
     rescanButton.setEnabled (root != juce::File() && ! library.isScanning());
+    const auto older = library.olderVersions().size();
+    cleanButton.setEnabled (older > 0 && ! library.isScanning());
+    cleanButton.setTooltip (older == 0 ? juce::String ("Deletes a firmware with the name of a newer one: none has one now")
+                                       : juce::String ((int) older) + (older == 1 ? " firmware has" : " firmwares have")
+                                             + " the name of a newer one (by version, else by date updated): delete "
+                                             + (older == 1 ? "it" : "them"));
     repaint();
 }
 
@@ -1033,6 +1081,8 @@ void LibraryView::resized()
     {
         rescanButton.setBounds (bar.removeFromRight (70));
         bar.removeFromRight (6);
+        cleanButton.setBounds (bar.removeFromRight (86));
+        bar.removeFromRight (6);
         pathButton.setBounds (bar.removeFromRight (90));
     }
     bar.removeFromRight (10);
@@ -1094,6 +1144,14 @@ void LibraryView::paintCell (juce::Graphics& g, int row, int column, int w, int 
         case description:
             g.setColour (theme::dimSilk);
             g.drawText (it.listing.about, r, juce::Justification::centredLeft, true);
+            break;
+        case builtOn:
+            g.setColour (theme::silk);
+            g.drawText (it.listing.base, r, juce::Justification::centredLeft, true);
+            break;
+        case launches:
+            g.setColour (it.launches > 0 ? theme::silk : theme::dimSilk.withAlpha (0.6f));
+            g.drawText (it.launches > 0 ? juce::String (it.launches) : juce::String ("-"), r, juce::Justification::centredRight, true);
             break;
         case dateAdded:
         case dateUpdated:
@@ -1211,6 +1269,13 @@ juce::String LibraryView::getCellTooltip (int row, int column)
             return howListed (it);
         case description:
             return it.listing.about.isNotEmpty() ? it.listing.about + "\n\n" + howListed (it) : juce::String();
+        case builtOn:
+            if (it.listing.base.isNotEmpty())
+                return "Made from " + it.listing.base + "'s code, as the Cloud list says";
+            return isBase (it) ? juce::String ("Others are built on it") : juce::String();
+        case launches:
+            return it.launches == 1 ? juce::String ("Loaded into an engine once")
+                                    : "Loaded into an engine " + juce::String (it.launches) + " times";
         case dateAdded:
             return "Found in the library " + formatDate (it.added);
         case dateUpdated:
@@ -1463,6 +1528,50 @@ void LibraryView::confirmTrash (const juce::Array<juce::File>& files)
         for (const auto& f : files)
             if (! safe->library.trash (f))
                 failed.add (f.getFileName());
+        if (! failed.isEmpty())
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
+                                                                                  "Could not delete",
+                                                                                  failed.joinIntoString ("\n"), {},
+                                                                                  safe.getComponent()),
+                                          nullptr);
+    });
+}
+
+void LibraryView::confirmCleanUp()
+{
+    const auto older = library.olderVersions();
+    if (older.empty())
+        return;
+    auto described = [this] (const juce::File& f)
+    {
+        for (const auto& it : items)
+            if (it.file == f)
+                return f.getFileName() + (it.version().isNotEmpty() ? " (" + it.version() + ")" : juce::String());
+        return f.getFileName();
+    };
+    constexpr size_t kShown = 12;
+    juce::StringArray lines;
+    for (size_t i = 0; i < juce::jmin (older.size(), kShown); ++i)
+        lines.add (described (older[i].file) + "  -  keeps " + described (older[i].keep));
+    if (older.size() > kShown)
+        lines.add ("and " + juce::String ((int) (older.size() - kShown)) + " more");
+
+    const auto what = older.size() == 1 ? juce::String ("1 older firmware") : juce::String ((int) older.size()) + " older firmwares";
+    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel (
+        juce::MessageBoxIconType::WarningIcon, "Delete " + what + "?",
+        juce::String (older.size() == 1 ? "It has" : "Each has")
+            + " the name of a newer one (by version, else by date updated), and moves to the Trash. Its launches go to the "
+              "one kept, and its rating, category and source URL if that one has none.\n\n" + lines.joinIntoString ("\n"),
+        "Delete", "Cancel", this);
+    juce::Component::SafePointer<LibraryView> safe (this);
+    confirmBox = juce::AlertWindow::showScopedAsync (options, [safe, older] (int result)
+    {
+        if (safe == nullptr || result != 1)
+            return;
+        juce::StringArray failed;
+        for (const auto& o : older)
+            if (! safe->library.replace (o.file, o.keep))
+                failed.add (o.file.getFileName());
         if (! failed.isEmpty())
             juce::AlertWindow::showAsync (juce::MessageBoxOptions::makeOptionsOk (juce::MessageBoxIconType::WarningIcon,
                                                                                   "Could not delete",

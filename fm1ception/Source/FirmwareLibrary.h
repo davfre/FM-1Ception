@@ -88,6 +88,8 @@ public:
         /** The Cloud list's entry it was downloaded as (CloudCatalog::Entry::key), else "". */
         juce::String cloudId;
         Listing listing;
+        /** The times it was loaded into an engine (noteLaunch). */
+        int launches = 0;
 
         /** The user's name for it, else the lists', else its own (ownName). */
         juce::String name() const;
@@ -150,6 +152,26 @@ public:
 
     /** Moves the file to the trash and forgets it. */
     bool trash (const juce::File&);
+
+    /** It was loaded into an engine: one more launch for it, else for the firmware in the library
+        with its bytes. */
+    void noteLaunch (const juce::File&);
+
+    /** Of two firmwares of one name, the newer: 1 if `a` is, -1 if `b` is, 0 if neither is (variants
+        of one version: "0.26.0" and "0.26.0-bluetooth"). By version when both have one with a number
+        in it (of one kind: a year is not one), a commit's hash after it aside, else by DATE UPDATED;
+        the same in both, the one whose file's name sorts first. */
+    static int newer (const Item& a, const Item& b);
+    struct Older
+    {
+        juce::File file, keep;
+    };
+    /** Each firmware with the FIRMWARE NAME of a newer one, with the newest of those to keep: the
+        name its lists give its bytes, else its own (not the lists' by its file's name alone). */
+    std::vector<Older> olderVersions() const;
+    /** Moves `older` to the trash, its launches going to `keep`, and its rating, category and source
+        URL where `keep` has none. */
+    bool replace (const juce::File& older, const juce::File& keep);
 
     /** Takes in a file just put under the folder (a Cloud download) now rather than at the next
         scan, as the Cloud entry `cloudId`, with `url` for its source if it has none. */

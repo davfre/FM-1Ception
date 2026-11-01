@@ -1026,7 +1026,13 @@ void CloudCatalog::reindex()
     for (const auto& it : library.items())
     {
         if (it.cloudId.isEmpty())
+        {
+            // put in the folder some other way, byte for byte the package the list has now: that is in it
+            if (it.listing.how == FirmwareLibrary::Listing::How::checksum && it.listing.ref.startsWith ("list:"))
+                if (const auto e = entryById.find (it.listing.ref.fromFirstOccurrenceOf (":", false, false)); e != entryById.end())
+                    byKey.emplace (list[e->second].key(), it.file);
             continue;
+        }
         byKey[it.cloudId] = it.file;
         versionsById[it.cloudId.upToLastOccurrenceOf ("@", false, false)].addIfNotAlreadyThere (
             it.cloudId.fromLastOccurrenceOf ("@", false, false));

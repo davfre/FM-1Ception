@@ -12,8 +12,8 @@ constexpr float kStripH = 20.0f;
 // the screen, and what is drawn on it while it is blank, in the screen's own space (the hardware
 // layout draws that space at half size in the panel's bezel)
 const R kScreen { 0.0f, 20.0f, 480.0f, 480.0f };
-const R kLoad   { 150.0f, 240.0f, 180.0f, 40.0f };
-const R kBrowse { 150.0f, 290.0f, 180.0f, 32.0f };
+const R kBrowse { 150.0f, 240.0f, 180.0f, 40.0f };
+const R kLoad   { 150.0f, 290.0f, 180.0f, 32.0f };
 const R kRows   { 0.0f, 500.0f, 480.0f, 128.0f };
 const R kToggle { 452.0f, 596.0f, 24.0f, 26.0f };
 const R kPopover { 4.0f, 502.0f, 472.0f, 90.0f };
@@ -786,26 +786,26 @@ void EngineView::paintScreen (juce::Graphics& g)
         if (handle != nullptr)
         {
             const auto at = toScreen (hover);
-            const bool over = kLoad.contains (at);
+            const bool over = kBrowse.contains (at);
             g.setColour (over ? theme::amber.withAlpha (0.2f) : theme::tray);
-            g.fillRoundedRectangle (kLoad, 6.0f);
-            g.setColour (theme::amber);
-            g.drawRoundedRectangle (kLoad, 6.0f, 1.5f);
-            g.setFont (theme::font (14.0f, true));
-            g.drawText ("LOAD FIRMWARE", kLoad, juce::Justification::centred);
-
-            const bool overBrowse = kBrowse.contains (at);
-            g.setColour (overBrowse ? theme::amber.withAlpha (0.2f) : theme::tray);
             g.fillRoundedRectangle (kBrowse, 6.0f);
-            g.setColour (theme::amber.withAlpha (overBrowse ? 1.0f : 0.6f));
-            g.drawRoundedRectangle (kBrowse, 6.0f, 1.0f);
-            g.setColour (overBrowse ? theme::amber : theme::silk);
-            g.setFont (theme::font (12.0f, true));
+            g.setColour (theme::amber);
+            g.drawRoundedRectangle (kBrowse, 6.0f, 1.5f);
+            g.setFont (theme::font (14.0f, true));
             g.drawText ("OPEN BROWSER", kBrowse, juce::Justification::centred);
+
+            const bool overLoad = kLoad.contains (at);
+            g.setColour (overLoad ? theme::amber.withAlpha (0.2f) : theme::tray);
+            g.fillRoundedRectangle (kLoad, 6.0f);
+            g.setColour (theme::amber.withAlpha (overLoad ? 1.0f : 0.6f));
+            g.drawRoundedRectangle (kLoad, 6.0f, 1.0f);
+            g.setColour (overLoad ? theme::amber : theme::silk);
+            g.setFont (theme::font (12.0f, true));
+            g.drawText ("LOAD FIRMWARE", kLoad, juce::Justification::centred);
 
             g.setColour (theme::dimSilk);
             g.setFont (theme::font (11.0f));
-            g.drawText ("or drop a .fwsc / .fm1save here", kBrowse.translated (0.0f, 42.0f).expanded (60.0f, 0.0f),
+            g.drawText ("or drop a .fwsc / .fm1save here", kLoad.translated (0.0f, 42.0f).expanded (60.0f, 0.0f),
                         juce::Justification::centred);
         }
     }
@@ -1334,7 +1334,10 @@ void EngineView::filesDropped (const juce::StringArray& files, int, int)
     for (const auto& f : files)
         if (juce::File (f).hasFileExtension ("fwsc;fm1save;json;fm1ception"))
         {
-            proc.loadFile (index, juce::File (f));
+            if (onFileDrop != nullptr)
+                onFileDrop (index, juce::File (f));
+            else
+                proc.loadFile (index, juce::File (f));
             return;
         }
 }

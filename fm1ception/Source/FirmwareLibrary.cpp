@@ -344,6 +344,7 @@ void FirmwareLibrary::load()
             r.url = e["url"].toString();
             r.isPackage = e.getProperty ("package", true);
             r.cloudId = e["cloud"].toString();
+            r.launches = juce::jmax (0, (int) e["launches"]);
             if (const auto& l = e["listing"]; l.isObject())
             {
                 const auto how = l["how"].toString();
@@ -403,6 +404,8 @@ void FirmwareLibrary::save()
             o->setProperty ("package", false);
         if (r.cloudId.isNotEmpty())
             o->setProperty ("cloud", r.cloudId);
+        if (r.launches > 0)
+            o->setProperty ("launches", r.launches);
         if (r.listing.how != Listing::How::none)
         {
             auto* l = new juce::DynamicObject();
@@ -739,6 +742,156 @@ void FirmwareLibrary::describe (const std::function<Listing (const Item&)>& list
         markDirty();
         sendChangeMessage();
     }
+}
+
+void FirmwareLibrary::noteLaunch (const juce::File& f)
+{
+    auto* r = find (f);
+    if (r == nullptr || ! r->found)
+    {
+        r = nullptr;
+        if (const auto digest = probe (f).digest; digest.isNotEmpty())
+            for (auto& rec : records)
+                if (rec.found && rec.digest == digest)
+                {
+                    r = &rec;
+                    break;
+                }
+    }
+    if (r == nullptr)
+        return;
+    ++r->launches;
+    markDirty();
+    sendChangeMessage();
+}
+
+namespace
+{
+bool isCommitHash (const juce::String& s)
+{
+    return s.length() >= 7 && s.containsOnly ("0123456789abcdefABCDEF") && ! s.containsOnly ("0123456789");
+}
+
+/** "v1.2.3-bt" (or "drum-v1.2.3-bt") as 1, 2, 3 and "-bt"; a commit's hash after it ("1.0-8b94d39")
+    is not part of it, and one alone ("047d21f") is no number. */
+std::pair<std::vector<int>, juce::String> versionNumber (const juce::String& version)
+{
+    auto v = version.trim();
+    if (const int dash = v.indexOfChar ('-'); dash > 0 && v.substring (0, dash).containsOnly ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+        if (const auto rest = v.substring (dash + 1); juce::CharacterFunctions::isDigit (rest[0])
+                                                      || ((rest[0] == 'v' || rest[0] == 'V') && juce::CharacterFunctions::isDigit (rest[1])))
+            v = rest;
+    if ((v.startsWithChar ('v') || v.startsWithChar ('V')) && juce::CharacterFunctions::isDigit (v[1]))
+        v = v.substring (1);
+    if (isCommitHash (v))
+        return { {}, v.toLowerCase() };
+    const auto number = v.initialSectionContainingOnly ("0123456789.").trimCharactersAtEnd (".");
+    std::vector<int> parts;
+    if (number.isNotEmpty())
+    {
+        juce::StringArray tokens;
+        tokens.addTokens (number, ".", {});
+        for (const auto& t : tokens)
+            parts.push_back (t.getIntValue());
+    }
+    auto tail = v.substring (number.length()).trimCharactersAtStart (".");
+    if (isCommitHash (tail.trimCharactersAtStart ("-+_")))
+        tail = {};
+    return { parts, tail.toLowerCase() };
+}
+
+/** What Clean Up takes for one firmware's name: the user's, else the lists' if they know its bytes,
+    else its own (the lists' by its file's name alone may be many firmwares': FM-1 NES's games). */
+juce::String sameNameKey (const FirmwareLibrary::Item& it)
+{
+    if (it.customName.isNotEmpty())
+        return FirmwareLibrary::normalise (it.customName);
+    return FirmwareLibrary::normalise (it.listing.exact() && it.listing.name.isNotEmpty() ? it.listing.name : it.ownName().first);
+}
+} // namespace
+
+int FirmwareLibrary::newer (const Item& a, const Item& b)
+{
+    const auto va = versionNumber (a.version()), vb = versionNumber (b.version());
+    // (a year for a version, "2026.10.22", is no newer than a "0.3.2" for it)
+    if (! va.first.empty() && ! vb.first.empty() && (va.first[0] >= 1000) == (vb.first[0] >= 1000))
+    {
+        for (size_t i = 0; i < juce::jmax (va.first.size(), vb.first.size()); ++i)
+        {
+            const int x = i < va.first.size() ? va.first[i] : 0, y = i < vb.first.size() ? vb.first[i] : 0;
+            if (x != y)
+                return x > y ? 1 : -1;
+        }
+        if (va.second != vb.second)
+            return 0;
+    }
+    if (a.modified != b.modified)
+        return a.modified > b.modified ? 1 : -1;
+    if (const int c = a.file.getFileName().compareNatural (b.file.getFileName()); c != 0)
+        return c < 0 ? 1 : -1;
+    return a.file.getFullPathName() < b.file.getFullPathName() ? 1 : -1;
+}
+
+std::vector<FirmwareLibrary::Older> FirmwareLibrary::olderVersions() const
+{
+    std::map<juce::String, std::vector<const Record*>> byName;
+    for (const auto& r : records)
+        if (r.found && r.isPackage)
+            if (const auto n = sameNameKey (r); n.isNotEmpty())
+                byName[n].push_back (&r);
+
+    std::vector<Older> out;
+    for (const auto& [name, group] : byName)
+    {
+        auto newerThan = [&group] (const Record* than) -> const Record*
+        {
+            for (const auto* r : group)
+                if (r != than && newer (*r, *than) > 0)
+                    return r;
+            return nullptr;
+        };
+        for (const auto* r : group)
+        {
+            const auto* keep = newerThan (r);
+            if (keep == nullptr)
+                continue;
+            for (size_t i = 0; i < group.size(); ++i)
+            {
+                const auto* next = newerThan (keep);
+                if (next == nullptr)
+                    break;
+                keep = next;
+            }
+            out.push_back ({ r->file, keep->file });
+        }
+    }
+    return out;
+}
+
+bool FirmwareLibrary::replace (const juce::File& older, const juce::File& keep)
+{
+    const auto* o = find (older);
+    if (o == nullptr || older == keep || find (keep) == nullptr)
+        return false;
+    const Record from = *o;
+    if (! trash (older))
+        return false;
+    edit (keep, [&from] (Record& k)
+    {
+        k.launches += from.launches;
+        if (k.rating == 0)
+            k.rating = from.rating;
+        if (k.category == Category::none && from.category != Category::none)
+        {
+            k.category = from.category;
+            k.subcategory = from.subcategory;
+            k.seeded = true;
+        }
+        if (k.url.isEmpty())
+            k.url = from.url;
+        return true;
+    });
+    return true;
 }
 
 bool FirmwareLibrary::trash (const juce::File& f)

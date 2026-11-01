@@ -49,8 +49,9 @@ you would install on a real FM-1:
 
 ### Loading a firmware
 
-Click **LOAD FIRMWARE** on an empty engine's screen, drop a `.fwsc` or `.fm1save` file onto the
-engine, or use **MENU › Load Firmware**. The firmware, and everything it has saved to its flash
+Click **OPEN BROWSER** on an empty engine's screen to pick one from the Firmware Library (or
+**LOAD FIRMWARE** under it for a file dialog), drop a `.fwsc` or `.fm1save` file onto the engine,
+or use **MENU › Firmware Library** or **MENU › Load Firmware**. The firmware, and everything it has saved to its flash
 (patches, settings, samples), is stored in your project, so the song reopens with the same sounds.
 
 **MENU › Export Save** writes a `.fm1save`: the firmware plus its saved state in one file, which

@@ -80,6 +80,8 @@ public:
     std::function<void (int slot)> onLoadRequest;
     /** OPEN BROWSER on a blank engine: the firmware library. */
     std::function<void (int slot)> onBrowseRequest;
+    /** A file dropped on it, to load: the processor loads it itself if this is not set. */
+    std::function<void (int slot, const juce::File&)> onFileDrop;
     /** lcdRow: the screen row right-clicked, -1 off the screen. */
     std::function<void (int slot, int lcdRow)> onMenuRequest;
     std::function<void (int slot)> onSelect;

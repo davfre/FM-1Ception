@@ -15,7 +15,8 @@ namespace fm1c
 // Right-click a firmware: Load to Engine, its category, edit its name or its
 // source URL, reveal it, delete it (to the trash). Double-click it (or Return)
 // to load it into the selected engine, or drag it onto an engine. A star sets
-// its rating (the same star again clears it).
+// its rating (the same star again clears it). Clean Up... deletes each firmware
+// with the name of a newer one (FirmwareLibrary::olderVersions).
 //
 // LOCAL | CLOUD at the left of the bar: CLOUD shows mutant.cloud's list of community
 // firmwares instead (CloudView), to download into the folder. INFO shows the
@@ -31,7 +32,8 @@ class LibraryView : public juce::Component,
 public:
     using Engines = LibraryEngines;
 
-    enum Column { fileName = 1, firmwareName, dateAdded, dateUpdated, category, rating, sourceUrl, version, author, description, subcategory };
+    enum Column { fileName = 1, firmwareName, dateAdded, dateUpdated, category, rating, sourceUrl, version, author, description, subcategory,
+                  builtOn, launches };
 
     /** cloud: the Cloud list, nullptr for none (no LOCAL | CLOUD); screens: where the info panel's
         come from, nullptr for none. */
@@ -87,6 +89,8 @@ public:
     static juce::String revealText();
     /** A box with an arrow out of its corner: opens in the browser. */
     static juce::Path linkIcon (juce::Rectangle<float>);
+    /** A globe: a source URL's, opens it. */
+    static juce::Path globeIcon (juce::Rectangle<float>);
 
 private:
     class Stars;
@@ -124,6 +128,7 @@ private:
     juce::PopupMenu categoryMenu (const juce::Array<juce::File>& files);
     void loadInto (int slot, const juce::File&);
     void confirmTrash (const juce::Array<juce::File>&);
+    void confirmCleanUp();
     void editName (int row);
     void editUrl (int row);
     void choosePath();
@@ -133,7 +138,7 @@ private:
     Engines engines;
     CloudCatalog* const cloud;
     juce::LookAndFeel_V4 lnf;
-    juce::TextButton pathButton, rescanButton { "Rescan" };
+    juce::TextButton pathButton, rescanButton { "Rescan" }, cleanButton { "Clean Up..." };
     juce::TextButton localTab { "LOCAL" }, cloudTab { "CLOUD" }, refreshButton { "Refresh" }, infoButton { "INFO" };
     std::unique_ptr<CloudView> cloudTable;
     juce::TextEditor search;
@@ -153,7 +158,7 @@ private:
     juce::File editingName;
     juce::String status, emptyNote;
 
-    static constexpr int kBarH = 40, kStatusH = 22, kTabW = 58;
+    static constexpr int kBarH = 40, kStatusH = 22, kTabW = 58, kSourceW = 100;
     /** Narrower than this, the window has no room for the info panel. */
     static constexpr int kInfoMinWidth = 760;
     juce::Rectangle<int> labelArea, pathArea;

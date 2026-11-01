@@ -106,6 +106,8 @@ private:
     juce::PopupMenu clockMenu (int slot);
     juce::String engineLabel (int slot) const;
     void chooseFile (int slot, bool exporting);
+    /** Loads it into the engine, counting a firmware's launch (FirmwareLibrary::noteLaunch). */
+    void launch (int slot, const juce::File&);
     /** The presets folder's tree (subfolders as submenus), each loading into the slot. */
     juce::PopupMenu presetsMenu (int slot, bool withFolderItem);
     void savePresetAs (int slot);

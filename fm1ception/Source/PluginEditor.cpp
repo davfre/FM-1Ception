@@ -283,6 +283,7 @@ void FM1CeptionEditor::syncViews()
     {
         auto* v = views.add (new EngineView (proc, views.size()));
         v->onLoadRequest = [this] (int slot) { chooseFile (slot, false); };
+        v->onFileDrop = [this] (int slot, const juce::File& file) { launch (slot, file); };
         v->onBrowseRequest = [this] (int slot)
         {
             selectEngine (slot);
@@ -643,8 +644,8 @@ void FM1CeptionEditor::showMainMenu()
         m.addSubMenu (title, sub);
     };
 
-    perEngine ("Load Firmware", false, [] (FM1CeptionEditor& e, int i) { e.chooseFile (i, false); });
     m.addItem ("Firmware Library...", [safe] { if (safe) safe->showLibrary(); });
+    perEngine ("Load Firmware", false, [] (FM1CeptionEditor& e, int i) { e.chooseFile (i, false); });
     if (n == 1)
     {
         m.addSubMenu ("Presets", presetsMenu (0, true));
@@ -737,8 +738,8 @@ void FM1CeptionEditor::showEngineMenu (int slot, int lcdRow)
 
     juce::PopupMenu m;
     m.addSectionHeader (engineLabel (slot));
-    m.addItem ("Load Firmware...", [safe, slot] { if (safe) safe->chooseFile (slot, false); });
     m.addItem ("Firmware Library...", [safe] { if (safe) safe->showLibrary(); });
+    m.addItem ("Load Firmware...", [safe, slot] { if (safe) safe->chooseFile (slot, false); });
     m.addSubMenu ("Presets", presetsMenu (slot, true));
     m.addItem ("Save Preset (Machine State)...", loaded, false, [safe, slot] { if (safe) safe->savePresetAs (slot); });
     m.addItem ("Export Save...", loaded, false, [safe, slot] { if (safe) safe->chooseFile (slot, true); });
@@ -851,7 +852,7 @@ void FM1CeptionEditor::showLibrary()
         engines.label = [this] (int slot) { return engineLabel (slot); };
         engines.load = [this] (int slot, const juce::File& file)
         {
-            proc.loadFile (slot, file);
+            launch (slot, file);
             selectEngine (slot);
         };
         libraryWindow = std::make_unique<LibraryWindow> (library->library, &library->cloud, std::move (engines), &library->screens);
@@ -892,6 +893,13 @@ void FM1CeptionEditor::chooseFile (int slot, bool exporting)
         if (exporting)
             safe->proc.exportFile (slot, file);
         else
-            safe->proc.loadFile (slot, file);
+            safe->launch (slot, file);
     });
+}
+
+void FM1CeptionEditor::launch (int slot, const juce::File& file)
+{
+    proc.loadFile (slot, file);
+    if (file.hasFileExtension (fm1c::FirmwareLibrary::kSuffix))
+        library->library.noteLaunch (file);
 }

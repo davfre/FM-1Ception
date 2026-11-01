@@ -847,6 +847,90 @@ int main (int argc, char** argv)
             check (up == "Gamma Mid Zeta Alpha Beta" && down == "Mid Zeta Alpha Beta Gamma",
                    "by category, then its sub category (none last), then A to Z: " + up + " | " + down);
         }
+        {
+            auto item = [] (const char* file, juce::int64 modified)
+            {
+                FirmwareLibrary::Item it;
+                it.file = juce::File ("/x").getChildFile (file);
+                it.modified = juce::Time (modified);
+                return it;
+            };
+            const auto v110 = item ("x-1.10.fwsc", 1000), v19 = item ("x-1.9.fwsc", 2000), none = item ("x.fwsc", 3000),
+                       bt = item ("x-1.9-bt.fwsc", 500), v19again = item ("x-v1.9.fwsc", 100),
+                       hashed = item ("x-1.9-8b94d39.fwsc", 50), hash = item ("x 047d21f6154ff6f86c7d.fwsc", 9000),
+                       year = item ("x 2026.10.22.fwsc", 10), semver = item ("x 0.3.2.fwsc", 20);
+            auto listed = [&item] (const char* version)
+            {
+                auto it = item ("x.fwsc", 0);
+                it.listing.how = FirmwareLibrary::Listing::How::download;
+                it.listing.version = version;
+                return it;
+            };
+            check (FirmwareLibrary::newer (v110, v19) == 1 && FirmwareLibrary::newer (v19, v110) == -1
+                       && FirmwareLibrary::newer (none, v110) == 1 && FirmwareLibrary::newer (bt, v19) == 0
+                       && FirmwareLibrary::newer (v19, v19again) == 1 && FirmwareLibrary::newer (v19, hashed) == 1
+                       && FirmwareLibrary::newer (hash, v110) == 1 && FirmwareLibrary::newer (semver, year) == 1
+                       && FirmwareLibrary::newer (listed ("drum-v0.27.0"), listed ("0.26.1")) == 1,
+                   "of one name the newer is by version (1.10 after 1.9), else by date updated; 1.9-bt and 1.9 are neither, "
+                   "1.9-8b94d39 is 1.9, and a hash or a year is no version to compare");
+        }
+        if (const auto mine = juce::SystemStats::getEnvironmentVariable ("FM1C_TEST_LIBRARY", {}); mine.isNotEmpty())
+        {
+            // what Clean Up would delete in a library of one's own (a copy of it: nothing is touched)
+            const auto copy = tmp.getChildFile ("mine.json");
+            juce::File (mine).copyFileTo (copy);
+            FirmwareLibrary lib (copy);
+            const auto items = lib.items();
+            auto shown = [&items] (const juce::File& f)
+            {
+                for (const auto& it : items)
+                    if (it.file == f)
+                        return f.getFileName() + " [" + it.version() + "]";
+                return f.getFileName();
+            };
+            const auto older = lib.olderVersions();
+            std::cout << "  Clean Up in " << mine << ": " << older.size() << " of " << items.size() << std::endl;
+            for (const auto& o : older)
+                std::cout << "    delete " << shown (o.file) << "   keep " << shown (o.keep) << std::endl;
+        }
+        if (haveFw)
+        {
+            const auto dir = tmp.getChildFile ("Versions");
+            dir.createDirectory();
+            const auto old = dir.getChildFile ("shrub-0.4.fwsc"), fresh = dir.getChildFile ("shrub-0.5.fwsc"),
+                       variant = dir.getChildFile ("shrub-0.5-bt.fwsc"), outside = tmp.getChildFile ("shrub-elsewhere.fwsc");
+            for (const auto& f : { old, fresh, variant, outside })
+                real.copyFileTo (f);
+            FirmwareLibrary lib (tmp.getChildFile ("versions.json"));
+            lib.setRoot (dir);
+            lib.waitForScan (30000);
+            lib.setRating (old, 3);
+            lib.noteLaunch (old);
+            lib.noteLaunch (old);
+            const auto olderOnes = lib.olderVersions();
+            check (olderOnes.size() == 1 && olderOnes[0].file == old && (olderOnes[0].keep == fresh || olderOnes[0].keep == variant),
+                   "Clean Up finds the older of one name (shrub 0.4 of 0.4, 0.5, 0.5-bt): "
+                       + juce::String ((int) olderOnes.size()));
+            if (olderOnes.size() == 1)
+            {
+                const auto keep = olderOnes[0].keep;
+                old.deleteFile();
+                const bool replaced = lib.replace (old, keep);
+                const auto k = itemFor (lib, keep);
+                check (replaced && ! itemFor (lib, old).has_value() && k && k->rating == 3 && k->launches == 2
+                           && lib.olderVersions().empty(),
+                       "and deletes it, its rating and launches going to the one kept");
+            }
+            int before = 0, after = 0;
+            for (const auto& it : lib.items())
+                before += it.launches;
+            lib.noteLaunch (outside);
+            lib.flush();
+            FirmwareLibrary again (tmp.getChildFile ("versions.json"));
+            for (const auto& it : again.items())
+                after += it.launches;
+            check (after == before + 1, "a launch from outside the folder counts for the firmware with its bytes, and is kept");
+        }
         tmp.deleteRecursively();
     }
 
@@ -1050,6 +1134,27 @@ int main (int argc, char** argv)
                 fromWeb.download (*e, [&why] (const juce::File&, const juce::String& err) { why = err; });
             fromWeb.waitForIdle (30000);
             check (why.contains ("not on the web"), "a list from the web may not point at files on this computer");
+        }
+        if (haveFw)
+        {
+            const auto mine = tmp.getChildFile ("Mine"), own = mine.getChildFile ("my own shrub.fwsc");
+            mine.createDirectory();
+            real.copyFileTo (own);
+            FirmwareLibrary ml (tmp.getChildFile ("mine.json"));
+            ml.setRoot (mine);
+            ml.waitForScan (30000);
+            const auto digest = ml.items().empty() ? juce::String() : ml.items()[0].digest;
+            const auto mineList = tmp.getChildFile ("mine-list.json");
+            mineList.replaceWithText (R"({ "bases": {}, "entries": [ { "id": "shrubm", "kind": "firmware", "name": "SHRUB", "devices": ["fm1"],
+                "release": { "version": "v0.4", "assets": [ { "name": "shrub-0.4.fwsc", "url": ")" + urlOf (served.getChildFile ("shrub.fwsc"))
+                                      + R"(", "product": "FM-1_900", "sha256": ")" + digest + juce::String::repeatedString ("0", 32) + R"(" } ] } } ] })");
+            CloudCatalog mc (ml, tmp.getChildFile ("mine-cloud.json"), { juce::URL (mineList) }, {});
+            mc.refresh();
+            mc.waitForIdle (30000);
+            ml.dispatchPendingMessages();
+            const auto* e = mc.find ("shrubm@0.4");
+            check (digest.isNotEmpty() && e != nullptr && mc.statusOf (*e) == Status::inLibrary && mc.fileOf (*e) == own,
+                   "a firmware put in the folder some other way, byte for byte the list's, is In Library: no second copy to GET");
         }
 
         check (CloudCatalog::resolve (juce::URL ("https://thefirmwarehub.com/catalog.json"), "fw/a-1.fwsc") == "https://thefirmwarehub.com/fw/a-1.fwsc"
