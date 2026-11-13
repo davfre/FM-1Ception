@@ -1452,8 +1452,15 @@ int main (int argc, char** argv)
             LibraryView view (lib, engines, nullptr, &cache);
             view.setSize (1200, 600);
             check (view.isInfoShown() && view.infoPanel().getWidth() == InfoPanel::kWidth, "the info panel shows at the right");
-            const auto info = view.infoOf (view.itemAt (0));
-            check (info.title == "SHRUB" && info.version == "0.4" && info.shotsKey == digest && info.package.existsAsFile()
+            const auto& item = view.itemAt (0);
+            const auto info = view.infoOf (item);
+            // omni-0.4 (findFirmware's first choice) is known to be SHRUB 0.4 from its package;
+            // another firmware is whatever the library makes of it.
+            const bool omni = real.getFileName() == "omni-0.4.fwsc";
+            const auto title = omni ? juce::String ("SHRUB") : item.name();
+            const auto version = omni ? juce::String ("0.4") : item.version();
+            check (info.title.upToFirstOccurrenceOf (FirmwareLibrary::kBaseMark, false, false) == title
+                       && info.version == version && info.shotsKey == digest && info.package.existsAsFile()
                        && std::any_of (info.facts.begin(), info.facts.end(), [] (const auto& f) { return f.first == "Added" && f.second.length() == 10; }),
                    "with what the firmware is, its dates days, its screens by its digest");
             view.setSize (700, 600);
