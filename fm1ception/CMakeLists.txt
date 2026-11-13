@@ -45,16 +45,25 @@ project(FM1Ception VERSION 1.0.0 LANGUAGES C CXX)
 set(JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Libraries/Juce"
     CACHE PATH "Path to JUCE framework")
 
-if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR
-        "JUCE not found at ${JUCE_DIR}\n"
-        "Expected it beside the repository, at ../Libraries/Juce.\n"
-        "Point at it explicitly with -DJUCE_DIR=/path/to/JUCE")
+if(EXISTS "${JUCE_DIR}/CMakeLists.txt")
+    add_subdirectory(${JUCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
+    set(_juce_source_dir "${JUCE_DIR}")
+else()
+    # No checkout beside the repository: fetch the release this is developed against
+    # (a 23 MB download, once per build folder).
+    message(STATUS "JUCE not found at ${JUCE_DIR}: fetching JUCE 9.0.2")
+    if(POLICY CMP0135)
+        cmake_policy(SET CMP0135 NEW)
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(JUCE
+        URL      https://github.com/juce-framework/JUCE/archive/refs/tags/9.0.2.tar.gz
+        URL_HASH SHA256=16d01c27e8327f3644306cc5c223aa6e21af1cc1ec62faa709fc0dced57d208a)
+    FetchContent_MakeAvailable(JUCE)
+    set(_juce_source_dir "${juce_SOURCE_DIR}")
 endif()
 
-add_subdirectory(${JUCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
-
-get_property(_juce_targets DIRECTORY ${JUCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+get_property(_juce_targets DIRECTORY ${_juce_source_dir} PROPERTY BUILDSYSTEM_TARGETS)
 foreach(_t IN LISTS _juce_targets)
     set_target_properties(${_t} PROPERTIES FOLDER "JUCE")
 endforeach()

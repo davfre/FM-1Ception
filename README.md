@@ -147,13 +147,14 @@ You need:
   `~/.cargo/bin`.
 - **[JUCE](https://github.com/juce-framework/JUCE)** 8 or later (developed against 9.0.2). By
   default the build looks for it beside the repository, at `../Libraries/Juce`; point elsewhere
-  with `-DJUCE_DIR=/path/to/JUCE`.
+  with `-DJUCE_DIR=/path/to/JUCE`. If it is in neither place, CMake downloads JUCE 9.0.2 into the
+  build folder when it configures (23 MB, once).
 - Xcode's command line tools on macOS, or Visual Studio 2026 with the C++ tools on Windows.
 
 ```sh
 git clone https://github.com/stevexfer/FM-1Ception.git
 cd FM-1Ception
-cmake -S fm1ception -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR=/path/to/JUCE
+cmake -S fm1ception -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
