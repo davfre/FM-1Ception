@@ -204,6 +204,14 @@ else()
     set(FM1C_VST3_AUTO_MANIFEST TRUE)
 endif()
 
+# The Cloud fetches over HTTPS. macOS and Windows have it built in; on Linux JUCE's own
+# URL code has no TLS, so it goes through curl there (JUCE sets JUCE_USE_CURL from NEEDS_CURL).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(FM1C_NEEDS_CURL TRUE)
+else()
+    set(FM1C_NEEDS_CURL FALSE)
+endif()
+
 juce_add_plugin(FM1Ception
     COMPANY_NAME             "Xfer Records"
     PLUGIN_MANUFACTURER_CODE Xfer
@@ -216,6 +224,7 @@ juce_add_plugin(FM1Ception
     NEEDS_MIDI_INPUT         TRUE
     NEEDS_MIDI_OUTPUT        FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+    NEEDS_CURL               ${FM1C_NEEDS_CURL}
     # installed by hand into /Library/Audio/Plug-Ins (the system folder), never the user's
     COPY_PLUGIN_AFTER_BUILD  FALSE
     VST3_AUTO_MANIFEST       ${FM1C_VST3_AUTO_MANIFEST}
@@ -241,11 +250,17 @@ target_include_directories(FM1Ception PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source
 
 set(FM1C_DEFINITIONS
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0
     FM1C_EMU_VERSION="3a0817f"
 )
+if(FM1C_NEEDS_CURL)
+    # Opened when first used rather than linked, so one build runs on any distribution's
+    # libcurl, and loads (with no Cloud) where there is none.
+    list(APPEND FM1C_DEFINITIONS JUCE_LOAD_CURL_SYMBOLS_LAZILY=1)
+else()
+    list(APPEND FM1C_DEFINITIONS JUCE_USE_CURL=0)
+endif()
 target_compile_definitions(FM1Ception PUBLIC ${FM1C_DEFINITIONS} JUCE_VST3_CAN_REPLACE_VST2=0)
 
 target_link_libraries(FM1Ception PRIVATE
@@ -267,7 +282,7 @@ endif()
 # ---------------------------------------------------------------------------
 option(FM1C_BUILD_TESTS "Build the console smoke test" ON)
 if(FM1C_BUILD_TESTS)
-    juce_add_console_app(FM1CeptionTests PRODUCT_NAME "FM1CeptionTests")
+    juce_add_console_app(FM1CeptionTests PRODUCT_NAME "FM1CeptionTests" NEEDS_CURL ${FM1C_NEEDS_CURL})
     juce_generate_juce_header(FM1CeptionTests)
 
     target_compile_features(FM1CeptionTests PRIVATE cxx_std_20)

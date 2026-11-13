@@ -23,8 +23,8 @@ built for playing several firmwares at once:
 - **MIDI routing** for several engines: play the selected engine, or one engine per MIDI channel.
 - **Level meters** for each engine, plus a main output meter whose caret sets the overall volume.
 
-It runs on macOS (Apple silicon and Intel) and 64-bit Windows. The build is also set up for Linux
-(VST3 and standalone), but that hasn't been tried yet.
+It runs on macOS (Apple silicon and Intel), 64-bit Windows and 64-bit Linux (VST3 and standalone;
+Linux is built from source, see [Building](#building)).
 
 This repository is a fork of [fm1-emu](https://github.com/joakimeriksson/fm1-emu): the emulator
 is at its top level as upstream has it, with the changes FM-1Ception needs, and the plugin is in
@@ -96,7 +96,8 @@ turn them by touching the screen:
 
 The position is remembered per firmware, for every engine and every project, in
 `~/Library/Application Support/Xfer Records/FM-1Ception/Firmware/` on macOS
-(`%APPDATA%\Xfer Records\FM-1Ception\Firmware\` on Windows): one small JSON file per firmware.
+(`%APPDATA%\Xfer Records\FM-1Ception\Firmware\` on Windows, `~/.config/Xfer Records/FM-1Ception/Firmware/`
+on Linux): one small JSON file per firmware.
 
 ### Layout
 
@@ -150,6 +151,13 @@ You need:
   with `-DJUCE_DIR=/path/to/JUCE`. If it is in neither place, CMake downloads JUCE 9.0.2 into the
   build folder when it configures (23 MB, once).
 - Xcode's command line tools on macOS, or Visual Studio 2026 with the C++ tools on Windows.
+- On Linux, GCC or Clang and the libraries JUCE needs. On Debian or Ubuntu:
+
+  ```sh
+  sudo apt install build-essential pkg-config cmake ninja-build libasound2-dev libcurl4-openssl-dev \
+      libfontconfig1-dev libfreetype-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+      libxi-dev libxinerama-dev libxrandr-dev libxrender-dev
+  ```
 
 ```sh
 git clone https://github.com/stevexfer/FM-1Ception.git
@@ -162,7 +170,8 @@ No submodules are needed for the plugin.
 
 On macOS this builds universal binaries (Apple silicon and Intel). To build only for your own Mac,
 which takes half the time, add `-DCMAKE_OSX_ARCHITECTURES=arm64`. The plugins are not installed
-by the build: they are in `build/FM1Ception_artefacts/Release/` (AU, VST3, Standalone).
+by the build: they are in `build/FM1Ception_artefacts/Release/` (AU, VST3, Standalone). On Linux,
+copy `FM-1Ception.vst3` into `~/.vst3/` for your hosts to find it.
 
 ### Installers
 
@@ -183,6 +192,7 @@ build/FM1CeptionTests_artefacts/Release/FM1CeptionTests path/to/firmware.fwsc
 
 Without an argument it uses `$FM1C_TEST_FIRMWARE`, or looks in `~/Documents/FM1/`. With
 `--snapshot DIR` it renders the editor to PNGs instead (that's where the pictures here come from).
+Set `FM1C_TEST_NETWORK=1` to also fetch the real firmware lists over HTTPS.
 
 ## How it's put together
 
